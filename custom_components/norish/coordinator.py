@@ -67,6 +67,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_NORISH_EMAIL,
@@ -717,7 +718,8 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _fetch_calendar(self, data: dict[str, Any]) -> None:
         """Fetch calendar entries."""
-        today = date.today()
+        # Use HA's local date, not the host's (containers often run in UTC)
+        today = dt_util.now().date()
         start_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         end_date = (today + timedelta(days=14)).strftime("%Y-%m-%d")
 
@@ -737,14 +739,15 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Norish: unexpected calendar format: %s", type(items)
                 )
         else:
-            _LOGGER.warning("Norish: no calendar data received")
+            # Fail the update so HA keeps the last known data instead of
+            # replacing it with an empty calendar.
+            raise UpdateFailed("Norish: no calendar data received")
 
     async def _fetch_groceries(self, data: dict[str, Any]) -> None:
         """Fetch the grocery / shopping list."""
         g_data = await self._fetch_trpc("groceries.list")
         if not g_data:
-            _LOGGER.debug("Norish: no grocery data received")
-            return
+            raise UpdateFailed("Norish: no grocery data received")
 
         result = self._safe_get_trpc_result(g_data, {})
 
