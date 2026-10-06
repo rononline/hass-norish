@@ -70,7 +70,7 @@ class NorishVideoPlayer(CoordinatorEntity, MediaPlayerEntity):
         today_str = dt_util.now().strftime("%Y-%m-%d")
         for event in self.coordinator.data.get("calendar", []):
             if event.get("date", "") == today_str and (
-                event.get("slot") or ""
+                event.get("slot") or event.get("type") or ""
             ).upper() == self._meal_type:
                 return event
         return None
