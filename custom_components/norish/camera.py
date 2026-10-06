@@ -70,7 +70,7 @@ class NorishRecipeCamera(CoordinatorEntity, Camera):
         """Return the entity picture URL."""
         return self._get_current_image_url()
 
-    def _get_current_image_url(self) -> str | None:
+    def _get_current_image_url(self, include_local: bool = True) -> str | None:
         """Resolve the best available image URL for today's meal."""
         if not self.coordinator.data:
             return None
@@ -82,12 +82,12 @@ class NorishRecipeCamera(CoordinatorEntity, Camera):
         for event in events:
             if event.get("date", "") != today_str:
                 continue
-            if (event.get("slot") or "").upper() != self._meal_type:
+            if (event.get("slot") or event.get("type") or "").upper() != self._meal_type:
                 continue
 
             # Prefer locally cached image
             local_image: str | None = event.get("_local_image")
-            if local_image:
+            if local_image and include_local:
                 return local_image
 
             # Fallback: remote image from recipe details
@@ -118,7 +118,7 @@ class NorishRecipeCamera(CoordinatorEntity, Camera):
         for event in events:
             if event.get("date", "") != today_str:
                 continue
-            if (event.get("slot") or "").upper() != self._meal_type:
+            if (event.get("slot") or event.get("type") or "").upper() != self._meal_type:
                 continue
 
             # Try reading from local cache (non-blocking)
@@ -141,8 +141,8 @@ class NorishRecipeCamera(CoordinatorEntity, Camera):
                     _LOGGER.debug("Failed to read cached image: %s", err)
 
             # Fallback: fetch from remote
-            image_url = self._get_current_image_url()
-            if image_url and not image_url.startswith("/local/"):
+            image_url = self._get_current_image_url(include_local=False)
+            if image_url:
                 try:
                     from homeassistant.helpers.aiohttp_client import async_get_clientsession
                     headers: dict = self.coordinator._get_headers()

@@ -16,8 +16,9 @@ from .coordinator import NorishCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Keep in sync with MEAL_SLOT_TIMES in sensor.py
 SLOT_TIMES: dict[str, tuple[int, int]] = {
-    "Breakfast": (7, 0),
+    "Breakfast": (8, 0),
     "Lunch": (12, 0),
     "Dinner": (18, 0),
     "Snack": (15, 0),
@@ -50,10 +51,10 @@ class NorishCalendar(CoordinatorEntity, CalendarEntity):
 
     @property
     def event(self) -> CalendarEvent | None:
-        """Return the next upcoming event."""
+        """Return the current or next upcoming event."""
         now = dt_util.now()
         events = self._get_events_for_range(now, now + timedelta(days=1))
-        return events[0] if events else None
+        return next((e for e in events if e.end > now), None)
 
     async def async_get_events(
         self,
@@ -104,7 +105,9 @@ class NorishCalendar(CoordinatorEntity, CalendarEntity):
                     or ""
                 )
 
-                slot: str = item.get("slot") or "Meal"
+                slot_raw = item.get("slot") or item.get("type") or "Meal"
+                # API may send "DINNER" or "Dinner" – normalise to "Dinner"
+                slot: str = slot_raw.capitalize() if isinstance(slot_raw, str) else "Meal"
                 hour, minute = SLOT_TIMES.get(slot, (12, 0))
 
                 # Summary: use recipe name for recipes, note title for notes
@@ -131,6 +134,10 @@ class NorishCalendar(CoordinatorEntity, CalendarEntity):
                     tzinfo=local_tz,
                 )
                 end_dt = start_dt + timedelta(hours=1)
+
+                # Only return events that overlap the requested time window
+                if not (start_dt < end_date and end_dt > start_date):
+                    continue
 
                 events.append(
                     CalendarEvent(
