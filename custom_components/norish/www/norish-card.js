@@ -14,7 +14,7 @@
  * norish_url: https://norish.example     # optional, adds an "open in Norish" link
  */
 
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.1.1";
 
 const I18N = {
   en: {
@@ -64,6 +64,13 @@ const esc = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[c]);
+
+/** Escape, then render the bit of Markdown Norish uses: **bold** and *italic*. */
+const md = (value) =>
+  esc(value)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__(.+?)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1<em>$2</em>");
 
 class NorishCard extends HTMLElement {
   static getStubConfig() {
@@ -258,7 +265,7 @@ class NorishCard extends HTMLElement {
         return `<li class="sub">${esc(text.replace(/^#+\s*/, ""))}</li>`;
       }
       number += 1;
-      return `<li><span class="num">${number}</span><span>${esc(text)}</span></li>`;
+      return `<li><span class="num">${number}</span><span>${md(text)}</span></li>`;
     }).join("");
 
     const link = this._config.norish_url && meal.recipe_id
@@ -286,7 +293,7 @@ class NorishCard extends HTMLElement {
           <div class="meta-item"><ha-icon icon="${icon}"></ha-icon>
             <div><div class="meta-label">${esc(this._t(key))}</div>
             <div class="meta-value">${esc(value)}</div></div></div>`).join("")}</div>` : ""}
-        ${meal.description ? `<p class="description">${esc(meal.description)}</p>` : ""}
+        ${meal.description ? `<p class="description">${md(meal.description)}</p>` : ""}
         ${ingredients ? `<section><h3><ha-icon icon="mdi:carrot"></ha-icon>${esc(this._t("ingredients"))}</h3>
           <ul class="ingredients">${ingredients}</ul></section>` : ""}
       </div>
@@ -588,13 +595,16 @@ const STYLE = `
   }
   section h3 ha-icon { color: var(--primary-color); --mdc-icon-size: 20px; }
   .ingredients, .steps { list-style: none; margin: 0; padding: 0; }
+  /* Amount column as wide as the longest amount, names aligned */
+  .ingredients { display: grid; grid-template-columns: auto 1fr; column-gap: 14px; }
   .ingredients li {
-    display: flex; gap: 12px; padding: 7px 2px;
+    grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; padding: 7px 2px;
     border-bottom: 1px dashed var(--divider-color); color: var(--primary-text-color);
   }
   .ingredients li:last-child { border-bottom: none; }
-  .qty { flex: 0 0 76px; font-weight: 600; text-align: right; color: var(--primary-text-color); }
+  .qty { font-weight: 600; text-align: right; white-space: nowrap; color: var(--primary-text-color); }
   .ing { min-width: 0; }
+  strong { font-weight: 600; }
   .steps li {
     display: grid; grid-template-columns: 28px 1fr; gap: 12px; align-items: start;
     padding: 6px 0; line-height: 1.55; color: var(--primary-text-color);

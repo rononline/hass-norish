@@ -29,7 +29,42 @@ MEAL_SLOT_TIMES: dict[str, time] = {
 MEAL_HIDE_AFTER = timedelta(minutes=30)
 
 
-def _recipe_extras(recipe: dict[str, Any]) -> dict[str, Any]:
+def _localize_unit(
+    unit: str, amount: Any, units: dict[str, Any], language: str
+) -> str:
+    """Translate a Norish unit key ("tablespoon") like Norish itself does.
+
+    Uses the short form, or the plural form when the amount is above 1, in
+    the given language with English as fallback. Unknown units stay as-is.
+    """
+    unit_def = units.get(unit) if unit else None
+    if not isinstance(unit_def, dict):
+        return unit
+
+    def _name(forms: Any) -> str | None:
+        forms = [f for f in forms or [] if isinstance(f, dict)]
+        base = language.split("-")[0]
+        for wanted in (language, base, "en"):
+            for form in forms:
+                if form.get("locale") == wanted and form.get("name"):
+                    return str(form["name"])
+        return None
+
+    try:
+        plural = amount is not None and float(amount) > 1
+    except (TypeError, ValueError):
+        plural = False
+    singular = _name(unit_def.get("short"))
+    if plural:
+        return _name(unit_def.get("plural")) or singular or unit
+    return singular or unit
+
+
+def _recipe_extras(
+    recipe: dict[str, Any],
+    units: dict[str, Any] | None = None,
+    language: str = "en",
+) -> dict[str, Any]:
     """Return recipe details (times, ingredients, steps) for the dashboard card.
 
     Norish stores ingredients and steps per measurement system; only the
@@ -50,7 +85,9 @@ def _recipe_extras(recipe: dict[str, Any]) -> dict[str, Any]:
         {
             "name": i.get("ingredientName") or "",
             "amount": i.get("amount"),
-            "unit": i.get("unit") or "",
+            "unit": _localize_unit(
+                i.get("unit") or "", i.get("amount"), units or {}, language
+            ),
         }
         for i in _for_system(recipe.get("recipeIngredients"))
     ]
@@ -142,6 +179,13 @@ class NorishMealSensor(CoordinatorEntity, SensorEntity):
     def _get_base_url(self) -> str:
         """Return the Norish base URL."""
         return self.coordinator.base_url
+
+    def _unit_context(self) -> tuple[dict[str, Any], str]:
+        """Return Norish unit translations and HA's language."""
+        units = (self.coordinator.data or {}).get("units") or {}
+        hass = getattr(self.coordinator, "hass", None)
+        language = getattr(getattr(hass, "config", None), "language", None) or "en"
+        return units, language
 
     @property
     def native_value(self) -> str:
@@ -248,7 +292,7 @@ class NorishMealSensor(CoordinatorEntity, SensorEntity):
                     "recipe_id": recipe_id,
                     "image": image_url,
                     "note": note_title if item_type == "note" else "",
-                    **_recipe_extras(recipe_details),
+                    **_recipe_extras(recipe_details, *self._unit_context()),
                 }
             )
 
@@ -278,6 +322,13 @@ class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
     def _get_base_url(self) -> str:
         """Return the Norish base URL."""
         return self.coordinator.base_url
+
+    def _unit_context(self) -> tuple[dict[str, Any], str]:
+        """Return Norish unit translations and HA's language."""
+        units = (self.coordinator.data or {}).get("units") or {}
+        hass = getattr(self.coordinator, "hass", None)
+        language = getattr(getattr(hass, "config", None), "language", None) or "en"
+        return units, language
 
     @property
     def native_value(self) -> str:
@@ -369,7 +420,7 @@ class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
                         "recipe_id": recipe_id,
                         "image": image_url,
                         "note": note_title if item_type == "note" else "",
-                        **_recipe_extras(recipe_details),
+                        **_recipe_extras(recipe_details, *self._unit_context()),
                     }
                 )
 
