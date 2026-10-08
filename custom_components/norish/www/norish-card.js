@@ -2,17 +2,19 @@
  * Norish meal planner card for Home Assistant.
  *
  * Shows today's meals as large photo tiles and the coming days as a compact
- * list. Data comes from the Norish week planner sensor (attribute week_data).
+ * list; tapping a meal opens the recipe (times, ingredients, steps).
+ * Data comes from the Norish week planner sensor (attribute week_data).
  *
  * type: custom:norish-card
- * entity: sensor.norish_week_planner   # optional, auto-detected
- * view: full | today | week            # optional, default: full
- * days: 7                              # optional, days in the list (1-7)
- * title: Maaltijden                    # optional
- * norish_url: https://norish.example   # optional, click opens the recipe
+ * entity: sensor.norish_week_planner     # optional, auto-detected
+ * view: full | today | week | recipe     # optional, default: full
+ * slot: dinner                           # optional, view: recipe only
+ * days: 7                                # optional, days in the list (1-7)
+ * title: Maaltijden                      # optional
+ * norish_url: https://norish.example     # optional, adds an "open in Norish" link
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 const I18N = {
   en: {
@@ -20,7 +22,10 @@ const I18N = {
     nothing_today: "Nothing planned for the rest of today",
     nothing_day: "Nothing planned", nothing_week: "No meals planned yet",
     no_entity: "Norish week planner sensor not found",
-    note: "Note",
+    note: "Note", back: "Back", open: "Open in Norish",
+    prep: "Preparation", cook: "Cooking", total: "Total time", servings: "Servings",
+    ingredients: "Ingredients", steps: "Method", hour: "h",
+    no_details: "No recipe details available", no_recipe: "No recipe planned",
     BREAKFAST: "Breakfast", LUNCH: "Lunch", DINNER: "Dinner", SNACK: "Snack",
   },
   nl: {
@@ -28,7 +33,10 @@ const I18N = {
     nothing_today: "Vandaag niets meer gepland",
     nothing_day: "Niets gepland", nothing_week: "Nog geen maaltijden gepland",
     no_entity: "Norish weekplanner-sensor niet gevonden",
-    note: "Notitie",
+    note: "Notitie", back: "Terug", open: "Openen in Norish",
+    prep: "Voorbereiding", cook: "Kooktijd", total: "Totale tijd", servings: "Porties",
+    ingredients: "Ingrediënten", steps: "Bereiding", hour: "u",
+    no_details: "Geen receptdetails beschikbaar", no_recipe: "Geen recept gepland",
     BREAKFAST: "Ontbijt", LUNCH: "Lunch", DINNER: "Diner", SNACK: "Tussendoortje",
   },
   de: {
@@ -36,7 +44,10 @@ const I18N = {
     nothing_today: "Heute nichts mehr geplant",
     nothing_day: "Nichts geplant", nothing_week: "Noch keine Mahlzeiten geplant",
     no_entity: "Norish Wochenplaner-Sensor nicht gefunden",
-    note: "Notiz",
+    note: "Notiz", back: "Zurück", open: "In Norish öffnen",
+    prep: "Vorbereitung", cook: "Kochzeit", total: "Gesamtzeit", servings: "Portionen",
+    ingredients: "Zutaten", steps: "Zubereitung", hour: "Std.",
+    no_details: "Keine Rezeptdetails verfügbar", no_recipe: "Kein Rezept geplant",
     BREAKFAST: "Frühstück", LUNCH: "Mittagessen", DINNER: "Abendessen", SNACK: "Snack",
   },
 };
@@ -73,6 +84,21 @@ class NorishCard extends HTMLElement {
                 { value: "full", label: "Today + coming days" },
                 { value: "today", label: "Today only" },
                 { value: "week", label: "Week list only" },
+                { value: "recipe", label: "Next recipe (ingredients + steps)" },
+              ],
+            },
+          },
+        },
+        {
+          name: "slot",
+          selector: {
+            select: {
+              mode: "dropdown",
+              options: [
+                { value: "breakfast", label: "Breakfast" },
+                { value: "lunch", label: "Lunch" },
+                { value: "dinner", label: "Dinner" },
+                { value: "snack", label: "Snack" },
               ],
             },
           },
@@ -84,10 +110,11 @@ class NorishCard extends HTMLElement {
   }
 
   setConfig(config) {
-    if (config.view && !["full", "today", "week"].includes(config.view)) {
-      throw new Error("view must be one of: full, today, week");
+    if (config.view && !["full", "today", "week", "recipe"].includes(config.view)) {
+      throw new Error("view must be one of: full, today, week, recipe");
     }
     this._config = { view: "full", days: 7, ...config };
+    this._selected = undefined;
     this._lastState = undefined;
     this._render();
   }
@@ -104,7 +131,7 @@ class NorishCard extends HTMLElement {
   }
 
   getCardSize() {
-    return this._config?.view === "today" ? 4 : 7;
+    return { today: 4, recipe: 9 }[this._config?.view] ?? 7;
   }
 
   getGridOptions() {
@@ -171,8 +198,105 @@ class NorishCard extends HTMLElement {
       <ha-icon class="fallback" icon="${SLOTS[this._slot(meal)].icon}"></ha-icon></div>`;
   }
 
-  _mealAttrs(meal) {
-    return meal.recipe_id ? `data-recipe="${esc(meal.recipe_id)}" tabindex="0" role="button"` : "";
+  _mealAttrs(meal, day) {
+    if (!meal.recipe_id) return "";
+    return `data-recipe="${esc(meal.recipe_id)}" data-date="${esc(day?.date)}"
+      data-type="${esc(meal.type)}" tabindex="0" role="button"`;
+  }
+
+  _lang_full() {
+    return this._hass?.locale?.language || this._hass?.language || "en";
+  }
+
+  _minutes(value) {
+    const min = Number(value);
+    if (!min || min <= 0) return "";
+    if (min < 60) return `${min} min`;
+    const rest = min % 60;
+    return `${Math.floor(min / 60)} ${this._t("hour")}${rest ? ` ${rest} min` : ""}`;
+  }
+
+  _amount(value) {
+    if (value === null || value === undefined || value === "") return "";
+    const num = Number(value);
+    if (Number.isNaN(num)) return String(value);
+    return new Intl.NumberFormat(this._lang_full(), { maximumFractionDigits: 2 }).format(num);
+  }
+
+  /** Find a meal (and its day) in week_data. */
+  _findMeal(week, wanted) {
+    for (const [index, day] of week.entries()) {
+      for (const meal of day.meals || []) {
+        if (wanted(meal, day)) return { meal, day, index };
+      }
+    }
+    return undefined;
+  }
+
+  _renderRecipe({ meal, day, index }, withBack) {
+    const slot = this._slot(meal);
+    const meta = [
+      ["prep", "mdi:knife", this._minutes(meal.prep_minutes)],
+      ["cook", "mdi:pot-steam-outline", this._minutes(meal.cook_minutes)],
+      ["total", "mdi:clock-outline", this._minutes(meal.total_minutes)],
+      ["servings", "mdi:account-group-outline", meal.servings ? String(meal.servings) : ""],
+    ].filter(([, , value]) => value);
+
+    const ingredients = (meal.ingredients || []).map((ing) => {
+      const name = String(ing.name || "");
+      if (name.trim().startsWith("#")) {
+        return `<li class="sub">${esc(name.trim().replace(/^#+\s*/, ""))}</li>`;
+      }
+      const qty = [this._amount(ing.amount), ing.unit].filter(Boolean).join(" ");
+      return `<li><span class="qty">${esc(qty)}</span><span class="ing">${esc(name)}</span></li>`;
+    }).join("");
+
+    let number = 0;
+    const steps = (meal.steps || []).map((step) => {
+      const text = String(step || "").trim();
+      if (text.startsWith("#")) {
+        return `<li class="sub">${esc(text.replace(/^#+\s*/, ""))}</li>`;
+      }
+      number += 1;
+      return `<li><span class="num">${number}</span><span>${esc(text)}</span></li>`;
+    }).join("");
+
+    const link = this._config.norish_url && meal.recipe_id
+      ? `<a class="open" href="${esc(this._config.norish_url.replace(/\/$/, ""))}/recipes/${encodeURIComponent(meal.recipe_id)}"
+          target="_blank" rel="noopener"><ha-icon icon="mdi:open-in-new"></ha-icon>${esc(this._t("open"))}</a>`
+      : "";
+
+    return `<div class="recipe">
+      <div class="recipe-main">
+        <div class="hero">
+          ${this._image(meal, "tile-img")}
+          <div class="shade"></div>
+          ${withBack ? `<button class="back" data-action="back" title="${esc(this._t("back"))}"
+            aria-label="${esc(this._t("back"))}"><ha-icon icon="mdi:arrow-left"></ha-icon></button>` : ""}
+          <div class="tile-body">
+            <div class="chips">
+              <span class="chip day-chip">${esc(this._dayLabel(day, index))}</span>
+              <span class="chip" style="--hue:${SLOTS[slot].hue}">
+                <ha-icon icon="${SLOTS[slot].icon}"></ha-icon>${esc(this._slotLabel(meal))}</span>
+            </div>
+            <div class="hero-name">${esc(meal.name)}</div>
+          </div>
+        </div>
+        ${meta.length ? `<div class="meta">${meta.map(([key, icon, value]) => `
+          <div class="meta-item"><ha-icon icon="${icon}"></ha-icon>
+            <div><div class="meta-label">${esc(this._t(key))}</div>
+            <div class="meta-value">${esc(value)}</div></div></div>`).join("")}</div>` : ""}
+        ${meal.description ? `<p class="description">${esc(meal.description)}</p>` : ""}
+        ${ingredients ? `<section><h3><ha-icon icon="mdi:carrot"></ha-icon>${esc(this._t("ingredients"))}</h3>
+          <ul class="ingredients">${ingredients}</ul></section>` : ""}
+      </div>
+      <div class="recipe-side">
+        ${steps ? `<section><h3><ha-icon icon="mdi:chef-hat"></ha-icon>${esc(this._t("steps"))}</h3>
+          <ol class="steps">${steps}</ol></section>` : ""}
+        ${!steps && !ingredients ? `<div class="nothing">${esc(this._t("no_details"))}</div>` : ""}
+        ${link}
+      </div>
+    </div>`;
   }
 
   _renderToday(today, upcoming) {
@@ -185,7 +309,7 @@ class NorishCard extends HTMLElement {
     const tiles = meals.map((meal) => {
       const slot = this._slot(meal);
       const showNote = meal.note && meal.note !== meal.name;
-      return `<div class="tile" ${this._mealAttrs(meal)}>
+      return `<div class="tile" ${this._mealAttrs(meal, today)}>
         ${this._image(meal, "tile-img")}
         <div class="shade"></div>
         <div class="tile-body">
@@ -204,7 +328,7 @@ class NorishCard extends HTMLElement {
       const index = i + startIndex;
       const meals = day.meals || [];
       const items = meals.length
-        ? meals.map((meal) => `<div class="meal" ${this._mealAttrs(meal)}>
+        ? meals.map((meal) => `<div class="meal" ${this._mealAttrs(meal, day)}>
             ${this._image(meal, "thumb")}
             <div class="meal-text">
               <span class="meal-slot">${esc(this._slotLabel(meal))}</span>
@@ -231,7 +355,8 @@ class NorishCard extends HTMLElement {
         if (ev.key === "Enter") this._onClick(ev);
       });
     }
-    const title = this._config.title ?? this._t("title");
+    const view = this._config.view;
+    const title = this._config.title ?? (view === "recipe" ? "" : this._t("title"));
     const entityId = this._entityId();
     const state = entityId && this._hass?.states[entityId];
     let body;
@@ -243,9 +368,23 @@ class NorishCard extends HTMLElement {
     } else {
       const week = state.attributes.week_data || [];
       const days = Math.max(1, Math.min(7, Number(this._config.days) || 7));
-      const view = this._config.view;
       const hasAny = week.some((d) => (d.meals || []).length);
-      if (!hasAny && view !== "today") {
+      const sel = this._selected;
+      const selected = sel && this._findMeal(week, (m, d) =>
+        m.recipe_id === sel.recipe && d.date === sel.date && m.type === sel.type);
+      if (sel && !selected) this._selected = undefined;  // meal no longer planned
+
+      if (selected) {
+        body = this._renderRecipe(selected, view !== "recipe");
+      } else if (view === "recipe") {
+        const slot = String(this._config.slot || "").toUpperCase();
+        const next = this._findMeal(week, (m) =>
+          m.recipe_id && (!slot || String(m.type).toUpperCase() === slot));
+        body = next
+          ? this._renderRecipe(next, false)
+          : `<div class="empty-today"><ha-icon icon="mdi:silverware-fork-knife"></ha-icon>
+              <span>${esc(this._t("no_recipe"))}</span></div>`;
+      } else if (!hasAny && view !== "today") {
         body = `<div class="empty-week"><ha-icon icon="mdi:calendar-blank-outline"></ha-icon>
           <span>${esc(this._t("nothing_week"))}</span></div>`;
       } else if (view === "today") {
@@ -279,14 +418,25 @@ class NorishCard extends HTMLElement {
   }
 
   _onClick(ev) {
-    const target = ev.composedPath().find((el) => el.dataset?.recipe);
-    if (target && this._config.norish_url) {
-      const base = this._config.norish_url.replace(/\/$/, "");
-      window.open(`${base}/recipes/${encodeURIComponent(target.dataset.recipe)}`, "_blank", "noopener");
+    const path = ev.composedPath();
+    if (path.some((el) => el.tagName === "A")) return;  // let links work normally
+    if (path.some((el) => el.dataset?.action === "back")) {
+      this._selected = undefined;
+      this._render();
+      return;
+    }
+    const target = path.find((el) => el.dataset?.recipe);
+    if (target) {
+      const { recipe, date, type } = target.dataset;
+      this._selected = { recipe, date, type };
+      this._render();
+      // Long list: make sure the opened recipe starts in view
+      const card = this.shadowRoot.querySelector("ha-card");
+      if (card && card.getBoundingClientRect().top < 0) card.scrollIntoView({ block: "start" });
       return;
     }
     const entityId = this._entityId();
-    if (!entityId || !(target || ev.composedPath().some((el) => el.classList?.contains("header")))) return;
+    if (!entityId || !path.some((el) => el.classList?.contains("header"))) return;
     this.dispatchEvent(new CustomEvent("hass-more-info", {
       detail: { entityId }, bubbles: true, composed: true,
     }));
@@ -399,6 +549,75 @@ const STYLE = `
   .empty-week { flex-direction: column; padding: 28px 16px; text-align: center; }
   .empty-week ha-icon { --mdc-icon-size: 36px; opacity: 0.6; }
   .warning { color: var(--error-color); padding: 8px 0; }
+
+  /* Recipe view */
+  .recipe { display: flex; flex-direction: column; gap: 20px; }
+  .recipe-main, .recipe-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .hero {
+    position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 300px;
+    border-radius: 14px; overflow: hidden; isolation: isolate;
+  }
+  .hero .tile-img.placeholder ha-icon { --mdc-icon-size: 56px; margin-bottom: 50px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .day-chip { background: rgba(255, 255, 255, 0.22); padding-left: 9px; }
+  .hero-name {
+    font-size: 1.5em; font-weight: 600; line-height: 1.2;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.45);
+  }
+  .back {
+    position: absolute; top: 10px; left: 10px; z-index: 1;
+    width: 38px; height: 38px; border: none; border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.45); color: #fff; backdrop-filter: blur(6px);
+  }
+  .back:hover { background: rgba(0, 0, 0, 0.65); }
+  .back ha-icon { --mdc-icon-size: 22px; }
+  .meta { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+  .meta-item { display: flex; align-items: center; gap: 10px; }
+  .meta-item ha-icon {
+    flex: 0 0 auto; color: var(--primary-color); padding: 8px; border-radius: 50%;
+    background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+    --mdc-icon-size: 20px;
+  }
+  .meta-label { font-weight: 600; color: var(--primary-text-color); font-size: 0.9em; }
+  .meta-value { color: var(--secondary-text-color); font-size: 0.9em; }
+  .description { margin: 0; color: var(--secondary-text-color); line-height: 1.5; }
+  section h3 {
+    display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
+    font-size: 1.05em; font-weight: 600; color: var(--primary-text-color);
+  }
+  section h3 ha-icon { color: var(--primary-color); --mdc-icon-size: 20px; }
+  .ingredients, .steps { list-style: none; margin: 0; padding: 0; }
+  .ingredients li {
+    display: flex; gap: 12px; padding: 7px 2px;
+    border-bottom: 1px dashed var(--divider-color); color: var(--primary-text-color);
+  }
+  .ingredients li:last-child { border-bottom: none; }
+  .qty { flex: 0 0 76px; font-weight: 600; text-align: right; color: var(--primary-text-color); }
+  .ing { min-width: 0; }
+  .steps li {
+    display: grid; grid-template-columns: 28px 1fr; gap: 12px; align-items: start;
+    padding: 6px 0; line-height: 1.55; color: var(--primary-text-color);
+  }
+  .num {
+    width: 28px; height: 28px; border-radius: 50%; font-size: 0.85em; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+  }
+  .ingredients li.sub, .steps li.sub {
+    display: block; border-bottom: none; padding: 12px 0 2px;
+    font-weight: 600; color: var(--secondary-text-color);
+    font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .open {
+    align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 14px; border-radius: 999px; text-decoration: none; font-weight: 500;
+    color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+  }
+  .open ha-icon { --mdc-icon-size: 18px; }
+  @container (min-width: 700px) {
+    .recipe { display: grid; grid-template-columns: 1fr 1.15fr; gap: 28px; align-items: start; }
+  }
 
   @container (max-width: 420px) {
     .day { grid-template-columns: 74px 1fr; gap: 8px; }
