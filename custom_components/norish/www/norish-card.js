@@ -9,12 +9,13 @@
  * entity: sensor.norish_week_planner     # optional, auto-detected
  * view: full | today | week | recipe     # optional, default: full
  * slot: dinner                           # optional, view: recipe only
+ * layout: auto | horizontal | vertical   # optional, recipe columns side by side
  * days: 7                                # optional, days in the list (1-7)
  * title: Maaltijden                      # optional
  * norish_url: https://norish.example     # optional, adds an "open in Norish" link
  */
 
-const CARD_VERSION = "1.1.1";
+const CARD_VERSION = "1.2.0";
 
 const I18N = {
   en: {
@@ -110,6 +111,19 @@ class NorishCard extends HTMLElement {
             },
           },
         },
+        {
+          name: "layout",
+          selector: {
+            select: {
+              mode: "dropdown",
+              options: [
+                { value: "auto", label: "Automatic (by width)" },
+                { value: "horizontal", label: "Side by side (landscape screen)" },
+                { value: "vertical", label: "Stacked" },
+              ],
+            },
+          },
+        },
         { name: "days", selector: { number: { min: 1, max: 7, mode: "box" } } },
         { name: "norish_url", selector: { text: { type: "url" } } },
       ],
@@ -120,7 +134,10 @@ class NorishCard extends HTMLElement {
     if (config.view && !["full", "today", "week", "recipe"].includes(config.view)) {
       throw new Error("view must be one of: full, today, week, recipe");
     }
-    this._config = { view: "full", days: 7, ...config };
+    if (config.layout && !["auto", "horizontal", "vertical"].includes(config.layout)) {
+      throw new Error("layout must be one of: auto, horizontal, vertical");
+    }
+    this._config = { view: "full", days: 7, layout: "auto", ...config };
     this._selected = undefined;
     this._lastState = undefined;
     this._render();
@@ -273,7 +290,7 @@ class NorishCard extends HTMLElement {
           target="_blank" rel="noopener"><ha-icon icon="mdi:open-in-new"></ha-icon>${esc(this._t("open"))}</a>`
       : "";
 
-    return `<div class="recipe">
+    return `<div class="recipe ${esc(this._config.layout)}">
       <div class="recipe-main">
         <div class="hero">
           ${this._image(meal, "tile-img")}
@@ -294,9 +311,10 @@ class NorishCard extends HTMLElement {
             <div><div class="meta-label">${esc(this._t(key))}</div>
             <div class="meta-value">${esc(value)}</div></div></div>`).join("")}</div>` : ""}
         ${meal.description ? `<p class="description">${md(meal.description)}</p>` : ""}
-        ${ingredients ? `<section><h3><ha-icon icon="mdi:carrot"></ha-icon>${esc(this._t("ingredients"))}</h3>
-          <ul class="ingredients">${ingredients}</ul></section>` : ""}
       </div>
+      ${ingredients ? `<div class="recipe-ing"><section>
+        <h3><ha-icon icon="mdi:carrot"></ha-icon>${esc(this._t("ingredients"))}</h3>
+        <ul class="ingredients">${ingredients}</ul></section></div>` : ""}
       <div class="recipe-side">
         ${steps ? `<section><h3><ha-icon icon="mdi:chef-hat"></ha-icon>${esc(this._t("steps"))}</h3>
           <ol class="steps">${steps}</ol></section>` : ""}
@@ -625,8 +643,39 @@ const STYLE = `
     color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 12%, transparent);
   }
   .open ha-icon { --mdc-icon-size: 18px; }
-  @container (min-width: 700px) {
-    .recipe { display: grid; grid-template-columns: 1fr 1.15fr; gap: 28px; align-items: start; }
+  /*
+   * Side by side for landscape screens: forced with layout: horizontal,
+   * automatic from 600px wide. Two columns (photo + ingredients | steps),
+   * three from 900px (photo | ingredients | steps) so it fits without scrolling.
+   */
+  .recipe.horizontal {
+    display: grid; gap: 16px 28px; align-items: start;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    grid-template-areas: "main side" "ing side";
+  }
+  .recipe.horizontal .recipe-main { grid-area: main; }
+  .recipe.horizontal .recipe-ing { grid-area: ing; }
+  .recipe.horizontal .recipe-side { grid-area: side; }
+  .recipe.horizontal .hero { aspect-ratio: 2 / 1; max-height: 240px; }
+  .recipe.horizontal .ingredients li { padding: 5px 2px; }
+  @container (min-width: 600px) {
+    .recipe.auto {
+      display: grid; gap: 16px 28px; align-items: start;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+      grid-template-areas: "main side" "ing side";
+    }
+    .recipe.auto .recipe-main { grid-area: main; }
+    .recipe.auto .recipe-ing { grid-area: ing; }
+    .recipe.auto .recipe-side { grid-area: side; }
+    .recipe.auto .hero { aspect-ratio: 2 / 1; max-height: 240px; }
+    .recipe.auto .ingredients li { padding: 5px 2px; }
+  }
+  @container (min-width: 900px) {
+    .recipe.auto, .recipe.horizontal {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1.3fr);
+      grid-template-areas: "main ing side";
+    }
+    .recipe.auto .hero, .recipe.horizontal .hero { aspect-ratio: 4 / 3; max-height: none; }
   }
 
   @container (max-width: 420px) {
