@@ -29,6 +29,44 @@ MEAL_SLOT_TIMES: dict[str, time] = {
 MEAL_HIDE_AFTER = timedelta(minutes=30)
 
 
+def _recipe_extras(recipe: dict[str, Any]) -> dict[str, Any]:
+    """Return recipe details (times, ingredients, steps) for the dashboard card.
+
+    Norish stores ingredients and steps per measurement system; only the
+    recipe's own system is returned. Lines starting with "#" are headings.
+    """
+    if not recipe:
+        return {}
+    system = recipe.get("systemUsed") or "metric"
+
+    def _for_system(items: Any) -> list[dict[str, Any]]:
+        rows = [
+            i for i in items or []
+            if isinstance(i, dict) and (i.get("systemUsed") or "metric") == system
+        ]
+        return sorted(rows, key=lambda i: float(i.get("order") or 0))
+
+    ingredients = [
+        {
+            "name": i.get("ingredientName") or "",
+            "amount": i.get("amount"),
+            "unit": i.get("unit") or "",
+        }
+        for i in _for_system(recipe.get("recipeIngredients"))
+    ]
+    steps = [s.get("step") or "" for s in _for_system(recipe.get("steps"))]
+
+    return {
+        "description": recipe.get("description") or "",
+        "servings": recipe.get("servings"),
+        "prep_minutes": recipe.get("prepMinutes"),
+        "cook_minutes": recipe.get("cookMinutes"),
+        "total_minutes": recipe.get("totalMinutes"),
+        "ingredients": ingredients,
+        "steps": steps,
+    }
+
+
 def _is_meal_past(meal_type: str) -> bool:
     """Return True if today's meal slot has ended (slot time + 30 min has passed).
 
@@ -74,6 +112,9 @@ async def async_setup_entry(
 
 class NorishMealSensor(CoordinatorEntity, SensorEntity):
     """Sensor for Norish meals."""
+
+    # Large recipe data – keep it out of the recorder database
+    _unrecorded_attributes = frozenset({"raw_data"})
 
     def __init__(
         self,
@@ -207,6 +248,7 @@ class NorishMealSensor(CoordinatorEntity, SensorEntity):
                     "recipe_id": recipe_id,
                     "image": image_url,
                     "note": note_title if item_type == "note" else "",
+                    **_recipe_extras(recipe_details),
                 }
             )
 
@@ -215,6 +257,11 @@ class NorishMealSensor(CoordinatorEntity, SensorEntity):
 
 class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
     """Sensor providing a 7-day meal plan overview."""
+
+    # Large recipe data – keep it out of the recorder database
+    _unrecorded_attributes = frozenset(
+        {"week_data", "mo", "tu", "we", "th", "fr", "sa", "su"}
+    )
 
     def __init__(
         self,
@@ -322,6 +369,7 @@ class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
                         "recipe_id": recipe_id,
                         "image": image_url,
                         "note": note_title if item_type == "note" else "",
+                        **_recipe_extras(recipe_details),
                     }
                 )
 
