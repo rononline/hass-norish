@@ -16,6 +16,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_NORISH_EMAIL, CONF_NORISH_PASSWORD, DEFAULT_URL, DOMAIN
 from .coordinator import NorishCoordinator
+from .frontend import async_register_card
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[str] = ["sensor", "todo", "calendar", "camera", "media_player"]
@@ -76,6 +77,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+
+    try:
+        await async_register_card(hass)
+    except Exception as err:  # noqa: BLE001 – the card must never block setup
+        _LOGGER.warning("Norish: could not register dashboard card: %s", err)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
