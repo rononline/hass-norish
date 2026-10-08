@@ -139,6 +139,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cached_stores: dict[str, str] = {}
         self._stores_last_fetched: datetime | None = None
 
+        # Unit translations from the Norish server (e.g. "tablespoon" → "el")
+        self._cached_units: dict[str, Any] = {}
+        self._units_last_fetched: datetime | None = None
+
         # Recipe cache: { recipe_id: recipe_dict }
         # Only invalidated when the set of recipe IDs in the calendar changes.
         self._cached_recipes: dict[str, Any] = {}
@@ -685,6 +689,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # --- Optional: recipe details + image caching ---
         try:
             await self._fetch_recipe_details_cached(data)
+            await self._fetch_units_cached(data)
             await self._download_and_cache_images(data)
         except ConfigEntryAuthFailed:
             _LOGGER.warning(
@@ -823,6 +828,23 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["stores"] = dict(new_store_map)
         self.store_map = dict(new_store_map)
         _LOGGER.debug("Norish: fetched and cached %d stores", len(new_store_map))
+
+    async def _fetch_units_cached(self, data: dict[str, Any]) -> None:
+        """Fetch Norish's unit translations, at most once per STORE_REFRESH_HOURS."""
+        now = datetime.now()
+        if self._units_last_fetched is None or (
+            (now - self._units_last_fetched).total_seconds() > STORE_REFRESH_HOURS * 3600
+        ):
+            u_data = await self._fetch_trpc("config.units")
+            units = self._safe_get_trpc_result(u_data, None) if u_data else None
+            if isinstance(units, dict) and units:
+                self._cached_units = units
+                self._units_last_fetched = now
+                _LOGGER.debug("Norish: fetched %d unit definitions", len(units))
+            else:
+                # Not available (e.g. older Norish) – try again in an hour
+                self._units_last_fetched = now - timedelta(hours=STORE_REFRESH_HOURS - 1)
+        data["units"] = self._cached_units
 
     async def _fetch_recipe_details_cached(self, data: dict[str, Any]) -> None:
         """Fetch recipe details, only re-fetching when the recipe ID set changes.
