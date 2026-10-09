@@ -14,19 +14,26 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import NorishCoordinator
+from .entity import norish_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
 # Default meal times used to determine when a slot is "over".
-# A meal is hidden 30 minutes after its default start time.
+# A meal is hidden MEAL_HIDE_AFTER past its default start time.
 MEAL_SLOT_TIMES: dict[str, time] = {
     "BREAKFAST": time(8, 0),
     "LUNCH": time(12, 0),
     "SNACK": time(15, 0),
     "DINNER": time(18, 0),
 }
-# Grace period after which a past meal is hidden
-MEAL_HIDE_AFTER = timedelta(minutes=30)
+# Grace period after which a past meal is hidden.
+# Six hours keeps each meal visible for the rest of its part of the day
+# (dinner at 18:00 stays up until midnight) instead of disappearing while you
+# are still cooking it.  Set this very high to effectively never hide a meal.
+MEAL_HIDE_AFTER = timedelta(hours=6)
+
+# Home Assistant rejects a state longer than 255 characters.
+MAX_STATE_LENGTH = 255
 
 
 def _localize_unit(
@@ -105,7 +112,7 @@ def _recipe_extras(
 
 
 def _is_meal_past(meal_type: str) -> bool:
-    """Return True if today's meal slot has ended (slot time + 30 min has passed).
+    """Return True if today's meal slot has ended (slot time + MEAL_HIDE_AFTER).
 
     Uses now.replace() to stay in the same timezone as HA's current time,
     avoiding any pytz/zoneinfo localization issues.
@@ -162,6 +169,7 @@ class NorishMealSensor(CoordinatorEntity, SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._entry = entry
+        self._attr_device_info = norish_device_info(entry, coordinator.base_url)
         self._meal_type = meal_type.upper()
 
         type_names: dict[str, str] = {
@@ -194,7 +202,8 @@ class NorishMealSensor(CoordinatorEntity, SensorEntity):
         if not meals:
             return "No plan"
         if len(meals) == 1:
-            return meals[0]["name"]
+            # A recipe name is free text; HA rejects a state over 255 chars.
+            return str(meals[0]["name"])[:MAX_STATE_LENGTH]
         return f"{len(meals)} meals"
 
     @property
@@ -315,6 +324,7 @@ class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
         """Initialize the week planner sensor."""
         super().__init__(coordinator)
         self._entry = entry
+        self._attr_device_info = norish_device_info(entry, coordinator.base_url)
         self._attr_name = "Norish Week Planner"
         self._attr_unique_id = f"{entry.entry_id}_week_planner"
         self._attr_icon = "mdi:calendar-week"

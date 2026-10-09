@@ -21,6 +21,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NorishCoordinator
+from .entity import norish_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ class NorishStoreList(CoordinatorEntity, TodoListEntity):
         """Initialize the store list entity."""
         super().__init__(coordinator)
         self._entry = entry
+        self._attr_device_info = norish_device_info(entry, coordinator.base_url)
         self.store_id = store_id
         self._store_name = store_name
 

@@ -1,5 +1,23 @@
 """Coordinator for the Norish API.
 
+v1.7.3 – Hardening pass.
+- The API key is no longer attached to image downloads on a foreign host.
+  A recipe imported from the web can carry an absolute image URL; the key
+  used to be sent there in an x-api-key header.  Requests now only carry
+  credentials when scheme + host match the configured Norish instance.
+- The image cache directory is no longer created in __init__.  That was
+  blocking I/O inside the event loop; _write_image() already creates it
+  from an executor.
+- A successful automatic key renewal now retries the pending request
+  instead of aborting the cycle.  The retry used to be skipped, costing a
+  full poll interval (up to 600 s under backoff) with a working key in hand.
+- Renewal now deletes the API keys it previously created, so the Norish
+  account no longer collects one dead key per renewal.  Only keys named
+  API_KEY_NAME are removed; hand-made keys are never touched.
+- Cached recipe images that are no longer referenced and older than
+  IMAGE_CACHE_MAX_AGE are pruned.  The cache lives under www/, which is
+  served without authentication and included in every backup.
+
 v1.7.0 – Calendar notes support.
 - Calendar items can now carry a free-text ``note`` field (e.g. "Going out for dinner").
 - Notes are surfaced in the CalendarEvent summary (when no recipe is planned) and
@@ -62,25 +80,29 @@ from typing import Any
 import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY, CONF_URL
+from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import (
-    CONF_NORISH_EMAIL,
-    CONF_NORISH_PASSWORD,
-    CONF_POLL_INTERVAL,
-    DEFAULT_POLL_INTERVAL,
-)
+from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
 IMAGE_CACHE_DIR = "www/norish_images"
+
+# Name given to API keys this integration creates.  Used both when creating a
+# key and when cleaning up superseded ones, so hand-made keys are never touched.
+API_KEY_NAME = "HomeAssistant"
+
+# Cached recipe images older than this with no current reference are removed.
+# The grace period keeps a recipe that briefly leaves the calendar window from
+# being re-downloaded on every poll.
+IMAGE_CACHE_MAX_AGE = timedelta(days=7)
 
 # How often to re-fetch the store list (it basically never changes).
 STORE_REFRESH_HOURS = 24
@@ -132,7 +154,9 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._image_cache_path = os.path.join(
             hass.config.config_dir, IMAGE_CACHE_DIR
         )
-        os.makedirs(self._image_cache_path, exist_ok=True)
+        # The directory is created lazily by _write_image(), which runs in an
+        # executor.  Creating it here would be blocking I/O inside the event
+        # loop, which Home Assistant detects and warns about.
 
         # --- Caches to avoid redundant API calls ---
         # Store cache: fetch once, refresh every STORE_REFRESH_HOURS
@@ -294,7 +318,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             create_url = f"{self.base_url}/api/auth/api-key/create"
             async with session.post(
                 create_url,
-                json={"name": "HomeAssistant"},
+                json={"name": API_KEY_NAME},
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=timeout,
             ) as resp:
@@ -331,6 +355,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.config_entry, data=new_data
             )
             _LOGGER.info("Norish: API key renewed automatically ✓")
+
+            # Clean up the keys we previously created, so Norish does not
+            # accumulate a dead "HomeAssistant" key on every renewal.
+            await self._async_prune_old_keys(token, keep_key=new_key)
             return True
 
         except aiohttp.ClientError as err:
@@ -344,6 +372,80 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         finally:
             self._renewal_in_progress = False
+
+    async def _async_prune_old_keys(self, token: str, keep_key: str) -> None:
+        """Delete API keys this integration created earlier.
+
+        Every renewal creates a key named ``API_KEY_NAME``.  Without cleanup the
+        Norish account collects a dead key per renewal.  Only keys carrying that
+        exact name are touched — keys the user made by hand are left alone, and
+        the key currently in use is identified by its ``start`` prefix and kept.
+
+        Failures here are logged and swallowed: a leftover key is untidy, not
+        broken, and must never cost us the renewal we just completed.
+        """
+        session = async_get_clientsession(self.hass)
+        timeout = aiohttp.ClientTimeout(total=30)
+        # Key management accepts either the session token or an API key
+        # depending on the Norish/Better Auth version; try both rather than
+        # silently skipping the cleanup.
+        candidates = [
+            {"Authorization": f"Bearer {token}"},
+            {"x-api-key": keep_key},
+        ]
+        try:
+            auth: dict[str, str] | None = None
+            body: Any = None
+            for headers in candidates:
+                async with session.get(
+                    f"{self.base_url}/api/auth/api-key/list",
+                    headers=headers, timeout=timeout,
+                ) as resp:
+                    if resp.status == 200:
+                        auth = headers
+                        body = await resp.json()
+                        break
+                    _LOGGER.debug(
+                        "Norish: API key list rejected %s (status %d)",
+                        next(iter(headers)), resp.status,
+                    )
+            if auth is None:
+                _LOGGER.debug("Norish: could not list API keys for cleanup")
+                return
+
+            keys = body.get("apiKeys", []) if isinstance(body, dict) else body
+            if not isinstance(keys, list):
+                return
+
+            for item in keys:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("name") != API_KEY_NAME:
+                    continue  # not ours – never touch a hand-made key
+                start = item.get("start") or ""
+                if start and keep_key.startswith(start):
+                    continue  # this is the key we just started using
+                key_id = item.get("id")
+                if not key_id:
+                    continue
+                async with session.post(
+                    f"{self.base_url}/api/auth/api-key/delete",
+                    json={"keyId": key_id},
+                    headers=auth, timeout=timeout,
+                ) as del_resp:
+                    if del_resp.status == 200:
+                        _LOGGER.info(
+                            "Norish: removed superseded API key %s", key_id
+                        )
+                    else:
+                        _LOGGER.debug(
+                            "Norish: could not remove old API key %s (status %d)",
+                            key_id, del_resp.status,
+                        )
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.debug("Norish: API key cleanup skipped: %s", err)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Norish: API key cleanup failed unexpectedly: %s", err)
 
     # ------------------------------------------------------------------
     # tRPC helpers
@@ -403,10 +505,16 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             # Try automatic renewal if credentials are stored
                             renewed = await self._async_renew_api_key()
                             if renewed:
-                                # Key renewed – update headers and retry this request
+                                # Key renewed – retry this very request with the
+                                # new key instead of aborting the cycle.  Aborting
+                                # cost a full poll interval (up to 600 s under
+                                # backoff) even though the new key already worked.
                                 headers = self._get_headers()
+                                if attempt < MAX_RETRIES - 1:
+                                    continue
                                 raise UpdateFailed(
-                                    f"Norish: API key renewed, retrying {procedure}"
+                                    f"Norish: API key renewed but no retry budget "
+                                    f"left for {procedure} – will retry next interval"
                                 )
                             # Before declaring the key dead, do one direct
                             # validation.  If it passes the consecutive 401s
@@ -924,6 +1032,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _download_and_cache_images(self, data: dict[str, Any]) -> None:
         """Download and locally cache recipe images."""
         calendar_items: list[dict[str, Any]] = data.get("calendar", [])
+        in_use: set[str] = set()
 
         for event in calendar_items:
             image_path = self._primary_image_path(event)
@@ -942,6 +1051,35 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if local_path:
                 event["_local_image"] = local_path
+                in_use.add(local_path.rsplit("/", 1)[-1])
+
+        await self.hass.async_add_executor_job(self._prune_image_cache, in_use)
+
+    def _prune_image_cache(self, in_use: set[str]) -> None:
+        """Delete cached images no longer referenced by the calendar.
+
+        Runs in an executor.  A recipe whose image changed leaves its old file
+        behind forever otherwise, and the cache lives under ``www/`` — served
+        without authentication and included in every backup.
+
+        Only files older than IMAGE_CACHE_MAX_AGE are removed, so a recipe that
+        drops out of the calendar window for a few days is not re-downloaded on
+        every poll.
+        """
+        if not os.path.isdir(self._image_cache_path):
+            return
+        cutoff = (dt_util.utcnow() - IMAGE_CACHE_MAX_AGE).timestamp()
+        for name in os.listdir(self._image_cache_path):
+            if name in in_use or not name.endswith(".jpg"):
+                continue
+            path = os.path.join(self._image_cache_path, name)
+            try:
+                if os.path.getmtime(path) >= cutoff:
+                    continue
+                os.remove(path)
+                _LOGGER.debug("Norish: removed stale cached image %s", name)
+            except OSError as err:
+                _LOGGER.debug("Norish: could not remove %s: %s", name, err)
 
     @staticmethod
     def _primary_image_path(event: dict[str, Any]) -> str | None:
@@ -966,6 +1104,19 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or recipe.get("imageUrl")
         )
 
+    def _is_own_host(self, url: str) -> bool:
+        """Return True if ``url`` points at the configured Norish instance.
+
+        Used to decide whether the API key may be attached to a request.
+        A relative path is always ours.  Comparison is on scheme + netloc so a
+        look-alike host (norish.example.com.evil.net) does not match.
+        """
+        if not url.startswith(("http://", "https://")):
+            return True
+        own = urllib.parse.urlsplit(self.base_url)
+        other = urllib.parse.urlsplit(url)
+        return (own.scheme, own.netloc.lower()) == (other.scheme, other.netloc.lower())
+
     async def _cache_image(
         self, image_url: str, recipe_id: str
     ) -> str | None:
@@ -981,7 +1132,15 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if file_exists:
                 return f"/local/norish_images/{filename}"
 
-            headers = self._get_headers()
+            # Only authenticate against our own Norish instance.  Recipes may
+            # carry an image URL on a third-party host (e.g. imported from the
+            # web); sending the API key there would hand our credentials to a
+            # stranger.
+            headers = (
+                self._get_headers()
+                if self._is_own_host(image_url)
+                else {"User-Agent": "HomeAssistant/Norish", "Accept": "image/*"}
+            )
             session = async_get_clientsession(self.hass)
 
             async with session.get(

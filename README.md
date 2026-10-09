@@ -1,13 +1,17 @@
 # Norish Home Assistant Integration
 
-[![Version](https://img.shields.io/github/v/release/Caps3n/hass-norish?label=version&color=blue)](https://github.com/Caps3n/hass-norish/releases)
+[![Version](https://img.shields.io/github/v/release/rononline/hass-norish?label=version&color=blue)](https://github.com/rononline/hass-norish/releases)
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![HA Version](https://img.shields.io/badge/Home%20Assistant-2024.6%2B-blue.svg)](https://www.home-assistant.io/)
+[![HA Version](https://img.shields.io/badge/Home%20Assistant-2024.11%2B-blue.svg)](https://www.home-assistant.io/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Validate](https://github.com/Caps3n/hass-norish/actions/workflows/validate.yaml/badge.svg)](https://github.com/Caps3n/hass-norish/actions/workflows/validate.yaml)
+[![Validate](https://github.com/rononline/hass-norish/actions/workflows/validate.yaml/badge.svg)](https://github.com/rononline/hass-norish/actions/workflows/validate.yaml)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-caps3n-FFDD00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/caps3n)
 
 A full-featured Home Assistant integration for [Norish](https://github.com/norish-recipes/norish) — the open-source recipe and meal planning app.
+
+> **This is a fork** of [Caps3n/hass-norish](https://github.com/Caps3n/hass-norish), tracking
+> upstream and adding a few fixes of its own. Report issues with *this* fork here; for the
+> original integration, please use the upstream repository.
 
 > Connects your Norish instance to Home Assistant, giving you meal sensors, a shopping list, a calendar, recipe images, and video support — all in one integration.
 
@@ -26,7 +30,7 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 - Per-day attributes: `mo`, `tu`, `we`, `th`, `fr`, `sa`, `su`
 - Highlights today and weekends
 - Sorted by meal type (Breakfast → Lunch → Dinner → Snack)
-- **Past meals auto-hidden** — meals are removed from today's view 30 min after their default time slot
+- **Past meals auto-hidden** — meals are removed from today's view 6 h after their default time slot (`MEAL_HIDE_AFTER` in `sensor.py`)
 
 ### 📆 Calendar
 - Native Home Assistant calendar entity
@@ -73,13 +77,13 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 1. Open **HACS** in Home Assistant
 2. Go to **Integrations**
 3. Click the **⋮ menu** (top right) → **Custom repositories**
-4. Add: `https://github.com/Caps3n/hass-norish` → Category: `Integration`
+4. Add: `https://github.com/rononline/hass-norish` → Category: `Integration`
 5. Search for **"Norish"** and click **Install**
 6. Restart Home Assistant
 
 ### Option 2: Manual
 
-1. Download the [latest release](https://github.com/Caps3n/hass-norish/releases)
+1. Download the [latest release](https://github.com/rononline/hass-norish/releases)
 2. Copy the `norish` folder into your `config/custom_components/` directory
 3. Restart Home Assistant
 
@@ -347,5 +351,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 - [Norish App](https://github.com/norish-recipes/norish)
 - [Home Assistant](https://www.home-assistant.io/)
 - [HACS](https://hacs.xyz/)
-- [Report a Bug](https://github.com/Caps3n/hass-norish/issues)
-- [Request a Feature](https://github.com/Caps3n/hass-norish/issues)
+- [Report a Bug](https://github.com/rononline/hass-norish/issues)
+- [Request a Feature](https://github.com/rononline/hass-norish/issues)

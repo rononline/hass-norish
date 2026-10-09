@@ -15,6 +15,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import NorishCoordinator
+from .entity import norish_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class NorishRecipeCamera(CoordinatorEntity, Camera):
         Camera.__init__(self)
 
         self._entry = entry
+        self._attr_device_info = norish_device_info(entry, coordinator.base_url)
         self._meal_type = meal_type.upper()
         self._attr_name = f"Norish {name} Image"
         self._attr_unique_id = f"{entry.entry_id}_camera_{meal_type}"

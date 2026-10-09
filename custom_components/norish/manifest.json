@@ -1,13 +1,13 @@
 {
   "domain": "norish",
   "name": "Norish Recipes & Meal Planning",
-  "codeowners": ["@Caps3n"],
+  "codeowners": ["@rononline"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],
-  "documentation": "https://github.com/Caps3n/hass-norish",
+  "documentation": "https://github.com/rononline/hass-norish",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/Caps3n/hass-norish/issues",
+  "issue_tracker": "https://github.com/rononline/hass-norish/issues",
   "requirements": ["aiohttp>=3.9.0"],
-  "version": "1.7.2"
+  "version": "1.7.3"
 }
