@@ -98,10 +98,8 @@ class NorishRecipeCamera(CoordinatorEntity, Camera):
                 image_url = recipe_details.get("image") or recipe_details.get("imageUrl")
                 if image_url:
                     return f"{base_url}{image_url}" if image_url.startswith("/") else image_url
-
-            recipe_id: str | None = event.get("recipeId")
-            if recipe_id and base_url:
-                return f"{base_url}/api/recipes/{recipe_id}/image"
+            # No image known: Norish has no generic per-recipe image URL, and
+            # guessing one costs an API request on every camera refresh.
 
         return None
 

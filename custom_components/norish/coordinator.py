@@ -74,7 +74,7 @@ import json
 import logging
 import os
 import urllib.parse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import aiohttp
@@ -117,6 +117,18 @@ MAX_AUTH_FAILURES = 3
 # Index 0 → 1st failure, index 1 → 2nd failure, last entry used for all
 # subsequent failures until MAX_AUTH_FAILURES is reached.
 RECONNECT_BACKOFF_SECONDS: list[int] = [60, 300, 600]
+
+# Norish limits every API key to 500 requests, and only resets that counter
+# once the key has been idle for a full hour.  Polling every few minutes never
+# leaves such a gap, so the counter keeps climbing until the key is refused
+# (after ~2.5 days at 15 min).  A nightly quiet window longer than one hour
+# lets the counter reset every night.
+QUIET_WINDOW_START = time(3, 0)
+QUIET_WINDOW_END = time(4, 5)
+
+
+class NorishRateLimited(UpdateFailed):
+    """The API key hit Norish's request limit; it recovers on its own."""
 
 
 class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -181,6 +193,8 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._consecutive_failures: int = 0
         # Remember the user-configured interval so we can restore it after backoff.
         self._normal_update_interval = timedelta(seconds=poll_interval)
+        # Set when Norish reports its request limit; no requests until then.
+        self._rate_limited_until: datetime | None = None
 
     def _get_headers(self) -> dict[str, str]:
         """Return headers for authenticated API requests."""
@@ -190,30 +204,93 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "Accept": "application/json",
         }
 
-    async def _async_validate_key(self) -> bool | None:
-        """Perform a direct API-key validation request.
+    async def _async_key_status(self) -> tuple[str | None, int]:
+        """Ask Norish why the API key is refused.
 
-        Returns:
-            True  – key is valid (200 response)
-            False – key is invalid/expired (401 response)
-            None  – network/server error (cannot determine key status)
+        tRPC answers every auth problem with a bare 401; Better Auth's
+        /api/auth/get-session returns the real reason.
+
+        Returns (status, retry_seconds) with status one of:
+            "valid"        – the key works (the 401 was transient)
+            "rate_limited" – the key hit Norish's request limit (temporary)
+            "invalid"      – the key is unknown, disabled or expired
+            None           – network/server error, status unknown
         """
-        url = (
-            f"{self.base_url}/api/trpc/groceries.list"
-            "?batch=1&input=%7B%220%22%3A%7B%22json%22%3Anull%7D%7D"
-        )
         session = async_get_clientsession(self.hass)
         try:
             async with session.get(
-                url,
+                f"{self.base_url}/api/auth/get-session",
                 headers=self._get_headers(),
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
-                if resp.status == 401:
-                    return False
-                return True
+                if resp.status == 200:
+                    return "valid", 0
+                try:
+                    body = await resp.json(content_type=None)
+                except ValueError:
+                    body = None
+                body = body if isinstance(body, dict) else {}
+                code = str(body.get("code") or "").upper()
+                if code == "RATE_LIMITED" or resp.status == 429:
+                    details = body.get("details") or {}
+                    retry_ms = details.get("tryAgainIn") if isinstance(details, dict) else None
+                    retry = (
+                        int(retry_ms / 1000)
+                        if isinstance(retry_ms, (int, float)) and retry_ms > 0
+                        else 3600
+                    )
+                    # Small margin so the first request after the pause succeeds
+                    return "rate_limited", min(retry, 3600) + 60
+                if resp.status in (401, 403):
+                    return "invalid", 0
+                return None, 0
         except (aiohttp.ClientError, asyncio.TimeoutError):
-            return None
+            return None, 0
+
+    async def _async_handle_401(self, what: str) -> bool:
+        """Work out what a 401 means; return True when the key was renewed.
+
+        Otherwise raises NorishRateLimited (request limit, recovers by itself),
+        UpdateFailed (transient 401 or server unreachable) or
+        ConfigEntryAuthFailed (key really invalid and renewal impossible).
+        """
+        status, retry = await self._async_key_status()
+        if status == "rate_limited":
+            self._consecutive_auth_failures = 0
+            self._rate_limited_until = dt_util.utcnow() + timedelta(seconds=retry)
+            _LOGGER.warning(
+                "Norish: API key reached Norish's request limit (%s) – pausing "
+                "requests for %d minutes. The key itself is fine.",
+                what, max(1, retry // 60),
+            )
+            raise NorishRateLimited(
+                f"Norish request limit reached – retrying in {retry} s"
+            )
+        if status == "valid":
+            _LOGGER.warning("Norish: transient 401 for %s – key is valid", what)
+            self._consecutive_auth_failures = 0
+            raise UpdateFailed(f"Norish: transient 401 for {what}, will retry")
+        if status is None:
+            raise UpdateFailed(
+                f"Norish: 401 for {what} and the key check failed – will retry"
+            )
+
+        _LOGGER.warning(
+            "Norish: API key rejected for %s – consecutive auth failures: %d/%d",
+            what, self._consecutive_auth_failures, MAX_AUTH_FAILURES,
+        )
+        if self._consecutive_auth_failures < MAX_AUTH_FAILURES:
+            raise UpdateFailed(
+                f"Norish: 401 for {what} "
+                f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES}, will retry)"
+            )
+        if await self._async_renew_api_key():
+            return True
+        _LOGGER.error(
+            "Norish: API key invalid or expired and could not be renewed. "
+            "Re-authentication required."
+        )
+        raise ConfigEntryAuthFailed("Norish API key invalid or expired")
 
     def _apply_reconnect_backoff(self) -> None:
         """Adjust update_interval based on consecutive failure count.
@@ -301,6 +378,11 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     return False
                 sign_in_data: dict[str, Any] = await resp.json()
+                # Norish has no Better Auth bearer plugin: the session is only
+                # recognised through the cookie set by this sign-in response.
+                session_cookie = "; ".join(
+                    f"{name}={morsel.value}" for name, morsel in resp.cookies.items()
+                )
 
             # Better Auth returns the token either at top-level or under "token"
             token: str = (
@@ -319,7 +401,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async with session.post(
                 create_url,
                 json={"name": API_KEY_NAME},
-                headers={"Authorization": f"Bearer {token}"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    **({"Cookie": session_cookie} if session_cookie else {}),
+                },
                 timeout=timeout,
             ) as resp:
                 if resp.status != 200:
@@ -358,7 +443,9 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Clean up the keys we previously created, so Norish does not
             # accumulate a dead "HomeAssistant" key on every renewal.
-            await self._async_prune_old_keys(token, keep_key=new_key)
+            await self._async_prune_old_keys(
+                token, keep_key=new_key, cookie=session_cookie
+            )
             return True
 
         except aiohttp.ClientError as err:
@@ -373,7 +460,9 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         finally:
             self._renewal_in_progress = False
 
-    async def _async_prune_old_keys(self, token: str, keep_key: str) -> None:
+    async def _async_prune_old_keys(
+        self, token: str, keep_key: str, cookie: str = ""
+    ) -> None:
         """Delete API keys this integration created earlier.
 
         Every renewal creates a key named ``API_KEY_NAME``.  Without cleanup the
@@ -390,6 +479,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # depending on the Norish/Better Auth version; try both rather than
         # silently skipping the cleanup.
         candidates = [
+            *([{"Cookie": cookie}] if cookie else []),
             {"Authorization": f"Bearer {token}"},
             {"x-api-key": keep_key},
         ]
@@ -495,70 +585,15 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ) as resp:
                     if resp.status == 401:
                         self._consecutive_auth_failures += 1
-                        _LOGGER.warning(
-                            "Norish: 401 for %s – consecutive auth failures: %d/%d",
-                            procedure,
-                            self._consecutive_auth_failures,
-                            MAX_AUTH_FAILURES,
-                        )
-                        if self._consecutive_auth_failures >= MAX_AUTH_FAILURES:
-                            # Try automatic renewal if credentials are stored
-                            renewed = await self._async_renew_api_key()
-                            if renewed:
-                                # Key renewed – retry this very request with the
-                                # new key instead of aborting the cycle.  Aborting
-                                # cost a full poll interval (up to 600 s under
-                                # backoff) even though the new key already worked.
-                                headers = self._get_headers()
-                                if attempt < MAX_RETRIES - 1:
-                                    continue
-                                raise UpdateFailed(
-                                    f"Norish: API key renewed but no retry budget "
-                                    f"left for {procedure} – will retry next interval"
-                                )
-                            # Before declaring the key dead, do one direct
-                            # validation.  If it passes the consecutive 401s
-                            # were transient (e.g. Norish server restart) and
-                            # we can resume normal polling without user action.
-                            key_valid = await self._async_validate_key()
-                            if key_valid is True:
-                                _LOGGER.warning(
-                                    "Norish: %d consecutive 401s but direct "
-                                    "validation succeeded – treating as transient, "
-                                    "resetting auth counter.",
-                                    self._consecutive_auth_failures,
-                                )
-                                self._consecutive_auth_failures = 0
-                                raise UpdateFailed(
-                                    f"Norish: transient 401 burst for {procedure}, "
-                                    "recovered – will retry next interval"
-                                )
-                            if key_valid is None:
-                                # Network error during validation – server
-                                # temporarily unreachable, retry later.
-                                _LOGGER.warning(
-                                    "Norish: %d consecutive 401s and validation "
-                                    "request also failed (network) – will retry.",
-                                    self._consecutive_auth_failures,
-                                )
-                                raise UpdateFailed(
-                                    f"Norish: cannot reach server after {procedure} "
-                                    "401 burst – will retry"
-                                )
-                            # key_valid is False → key is genuinely expired
-                            _LOGGER.error(
-                                "Norish: %d consecutive 401s – API key invalid or "
-                                "expired. Re-authentication required.",
-                                self._consecutive_auth_failures,
+                        if await self._async_handle_401(procedure):
+                            # Key renewed – retry this very request with the new key
+                            headers = self._get_headers()
+                            if attempt < MAX_RETRIES - 1:
+                                continue
+                            raise UpdateFailed(
+                                f"Norish: API key renewed but no retry budget "
+                                f"left for {procedure} – will retry next interval"
                             )
-                            raise ConfigEntryAuthFailed(
-                                "Norish API key invalid or expired"
-                            )
-                        raise UpdateFailed(
-                            f"Norish: transient 401 for {procedure} "
-                            f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES} "
-                            "consecutive failures, will retry)"
-                        )
 
                     if resp.status == 429:
                         # Rate-limited: tell HA to wait until next poll interval.
@@ -683,25 +718,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ) as resp:
                 if resp.status == 401:
                     self._consecutive_auth_failures += 1
-                    _LOGGER.warning(
-                        "Norish: POST %s – 401, consecutive auth failures: %d/%d",
-                        procedure,
-                        self._consecutive_auth_failures,
-                        MAX_AUTH_FAILURES,
-                    )
-                    if self._consecutive_auth_failures >= MAX_AUTH_FAILURES:
-                        renewed = await self._async_renew_api_key()
-                        if renewed:
-                            raise UpdateFailed(
-                                f"Norish: API key renewed, retrying POST {procedure}"
-                            )
-                        raise ConfigEntryAuthFailed(
-                            "Norish API key invalid or expired on POST"
+                    if await self._async_handle_401(f"POST {procedure}"):
+                        raise UpdateFailed(
+                            f"Norish: API key renewed, retrying POST {procedure}"
                         )
-                    raise UpdateFailed(
-                        f"Norish: transient 401 for POST {procedure} "
-                        f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES})"
-                    )
                 if resp.status == 429:
                     _LOGGER.warning(
                         "Norish: POST %s rate-limited (429)", procedure
@@ -763,11 +783,30 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch all Norish data.
 
-        On 401: raises ConfigEntryAuthFailed so HA shows 'Reconfigure'.
+        On 401: asks Norish why. Request limit → pause and keep the last data;
+        invalid key → renew, or ConfigEntryAuthFailed after MAX_AUTH_FAILURES.
+        Nightly quiet window: no requests, so the key's request counter resets.
         On 429: raises UpdateFailed so HA retries on the next poll interval.
         On network errors: raises UpdateFailed so HA retries on next poll.
         Backoff: update_interval grows after each failure and resets on success.
         """
+        if self._rate_limited_until is not None:
+            if dt_util.utcnow() < self._rate_limited_until:
+                if self.data is not None:
+                    # Keep showing the last data instead of going unavailable
+                    return self.data
+                raise UpdateFailed("Norish request limit reached – waiting")
+            self._rate_limited_until = None
+
+        if self.data is not None and (
+            QUIET_WINDOW_START <= dt_util.now().time() < QUIET_WINDOW_END
+        ):
+            _LOGGER.debug(
+                "Norish: nightly quiet window – no requests, so the API key's "
+                "request counter can reset"
+            )
+            return self.data
+
         data: dict[str, Any] = {
             "calendar": [],
             "groceries": [],
@@ -780,6 +819,15 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._fetch_stores_cached(data)
         except ConfigEntryAuthFailed:
             # API key is invalid → user must reconfigure
+            self._consecutive_failures += 1
+            self._apply_reconnect_backoff()
+            raise
+        except NorishRateLimited:
+            if self.data is not None and self._rate_limited_until is not None:
+                # Temporary: keep the last data, poll again right after the pause
+                remaining = self._rate_limited_until - dt_util.utcnow()
+                self.update_interval = max(remaining, timedelta(seconds=60))
+                return self.data
             self._consecutive_failures += 1
             self._apply_reconnect_backoff()
             raise

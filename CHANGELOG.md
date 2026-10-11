@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.4] - 2026-10-11
+
+### Fixed — Norish request limit no longer triggers re-authentication
+- 🔑 **Root cause** — Norish limits every API key to 500 requests and only resets
+  that counter after the key has been idle for a full hour. Polling every
+  15 minutes never leaves such a gap, so after ~2.5 days every request returned
+  401 and the integration asked for re-authentication, although the key was fine.
+- 🌙 **Nightly quiet window (03:00–04:05)** — no requests during this window, so
+  the key's counter resets every night and the limit is not reached at the
+  default poll interval.
+- ⏸️ **Rate limit recognised** — on a 401 the integration asks
+  `/api/auth/get-session` for the reason. `RATE_LIMITED` pauses requests until
+  Norish allows them again while entities keep their last data; only a really
+  invalid key leads to renewal or re-authentication.
+- 🍪 **Automatic key renewal** sends the session cookie from the sign-in
+  response; Norish does not accept the bearer token on its own.
+- 📷 **Camera** no longer requests a non-existent image URL (each attempt
+  counted towards the limit).
+
+---
+
 ## [1.7.0] - 2026-06-29
 
 ### Added — Calendar notes support
