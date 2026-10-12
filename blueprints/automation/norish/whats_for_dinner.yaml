@@ -1,0 +1,98 @@
+blueprint:
+  name: Norish – what's for dinner?
+  description: >-
+    Ask Assist "wat eten we vanavond?" or "wat eten we morgen?" and hear the
+    dinner planned in Norish. Sentences and answers can be changed to any
+    language; a sentence containing the "tomorrow" word answers for tomorrow.
+  domain: automation
+  source_url: https://github.com/rononline/hass-norish/blob/main/blueprints/automation/norish/whats_for_dinner.yaml
+  input:
+    planner:
+      name: Norish week planner sensor
+      selector:
+        entity:
+          filter:
+            - integration: norish
+              domain: sensor
+      default: sensor.norish_week_planner
+    sentences:
+      name: Sentences
+      description: Sentences that trigger the answer (no punctuation).
+      default:
+        - wat eten we vanavond
+        - wat eten we vandaag
+        - wat eten we morgen
+        - wat staat er vanavond op het menu
+        - wat staat er morgen op het menu
+      selector:
+        text:
+          multiple: true
+    tomorrow_word:
+      name: Word for "tomorrow"
+      default: morgen
+      selector:
+        text:
+    meal_type:
+      name: Meal
+      default: DINNER
+      selector:
+        select:
+          options:
+            - label: Breakfast
+              value: BREAKFAST
+            - label: Lunch
+              value: LUNCH
+            - label: Dinner
+              value: DINNER
+            - label: Snack
+              value: SNACK
+    answer_today:
+      name: Answer for today
+      description: "{meal} is replaced by the planned meal(s)."
+      default: "Vanavond eten we {meal}."
+      selector:
+        text:
+    answer_tomorrow:
+      name: Answer for tomorrow
+      default: "Morgen eten we {meal}."
+      selector:
+        text:
+    answer_nothing:
+      name: Answer when nothing is planned
+      default: "Daar staat in Norish nog niets voor gepland."
+      selector:
+        text:
+    joiner:
+      name: Word between several meals
+      default: en
+      selector:
+        text:
+
+triggers:
+  - trigger: conversation
+    command: !input sentences
+
+variables:
+  planner: !input planner
+  tomorrow_word: !input tomorrow_word
+  meal_type: !input meal_type
+  answer_today: !input answer_today
+  answer_tomorrow: !input answer_tomorrow
+  answer_nothing: !input answer_nothing
+  joiner: !input joiner
+  answer: >-
+    {% set tomorrow = (tomorrow_word | lower) in (trigger.sentence | lower) %}
+    {% set days = state_attr(planner, 'week_data') or [] %}
+    {% set index = 1 if tomorrow else 0 %}
+    {% set day = days[index] if days | count > index else none %}
+    {% set meals = (day.meals if day else []) | selectattr('type', 'eq', meal_type) | map(attribute='name') | list %}
+    {% if meals %}
+      {{ (answer_tomorrow if tomorrow else answer_today) | replace('{meal}', meals | join(' ' ~ joiner ~ ' ')) }}
+    {% else %}
+      {{ answer_nothing }}
+    {% endif %}
+
+actions:
+  - set_conversation_response: "{{ answer | trim }}"
+
+mode: parallel
