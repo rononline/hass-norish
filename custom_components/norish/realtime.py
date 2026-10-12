@@ -16,13 +16,16 @@ import contextlib
 import json
 import logging
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
+
+from .const import DOMAIN
 
 if TYPE_CHECKING:
     from .coordinator import NorishCoordinator
@@ -43,6 +46,9 @@ SUBSCRIPTIONS: tuple[str, ...] = (
     "stores.onDeleted",
 )
 
+# Fired on the HA event bus for every change Norish pushes
+EVENT_NORISH_CHANGE = "norish_change"
+
 # Poll interval while the WebSocket is connected (safety net only)
 REALTIME_POLL_INTERVAL = timedelta(minutes=30)
 
@@ -50,6 +56,11 @@ REALTIME_POLL_INTERVAL = timedelta(minutes=30)
 WS_CLOSE_UNAUTHORIZED = 4401
 # Error message ending a subscription that fell behind (refetch + resubscribe)
 REALTIME_LAGGED = "REALTIME_LAGGED"
+
+# After this many failed connection attempts in a row, raise a repair issue
+# (usually the reverse proxy does not forward WebSocket upgrades on /trpc)
+REPAIR_AFTER_FAILURES = 5
+ISSUE_REALTIME = "realtime_unavailable"
 
 RECONNECT_MIN = 10  # seconds
 RECONNECT_MAX = 900
@@ -68,6 +79,9 @@ class NorishRealtime:
         self._task: asyncio.Task | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self.connected = False
+        self._failed_attempts = 0
+        self._issue_raised = False
+        self._started = False
 
     def start(self) -> None:
         """Start the background connection loop."""
@@ -115,6 +129,7 @@ class NorishRealtime:
 
             started = dt_util.utcnow()
             close_code: int | None = None
+            self._started = False
             try:
                 close_code = await self._connect_once()
             except asyncio.CancelledError:
@@ -126,6 +141,10 @@ class NorishRealtime:
             finally:
                 self._set_connected(False)
 
+            if not self._started:
+                self._failed_attempts += 1
+                if self._failed_attempts == REPAIR_AFTER_FAILURES:
+                    self._raise_issue()
             if dt_util.utcnow() - started > HEALTHY_AFTER:
                 delay = RECONNECT_MIN
             if close_code == WS_CLOSE_UNAUTHORIZED:
@@ -170,6 +189,31 @@ class NorishRealtime:
             _LOGGER.debug("Norish realtime: socket closed (code %s)", ws.close_code)
             return ws.close_code
 
+    def _raise_issue(self) -> None:
+        """Explain in Repairs why instant updates are not working."""
+        _LOGGER.warning(
+            "Norish realtime: %d connection attempts failed – falling back to "
+            "polling. Check that the reverse proxy forwards WebSocket upgrades "
+            "on /trpc.", self._failed_attempts,
+        )
+        ir.async_create_issue(
+            self._hass,
+            DOMAIN,
+            ISSUE_REALTIME,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_REALTIME,
+            translation_placeholders={"url": self._ws_url()},
+        )
+        self._issue_raised = True
+
+    def _fire_event(self, sub_id: Any, envelope: Any) -> None:
+        """Fire norish_change on the HA event bus for automations."""
+        if not isinstance(sub_id, int) or not 1 <= sub_id <= len(SUBSCRIPTIONS):
+            return
+        data = event_data(SUBSCRIPTIONS[sub_id - 1], envelope)
+        self._hass.bus.async_fire(EVENT_NORISH_CHANGE, data)
+
     async def _handle(self, raw: str, subscribed: bool) -> bool:
         """Handle one tRPC message; return whether subscriptions are live."""
         try:
@@ -208,6 +252,11 @@ class NorishRealtime:
 
         if result.get("type") == "started" and not subscribed:
             _LOGGER.info("Norish realtime: connected – changes arrive instantly")
+            self._started = True
+            self._failed_attempts = 0
+            if self._issue_raised:
+                ir.async_delete_issue(self._hass, DOMAIN, ISSUE_REALTIME)
+                self._issue_raised = False
             self._set_connected(True)
             # Catch up on anything that changed while disconnected
             await self._coordinator.async_request_refresh()
@@ -220,6 +269,38 @@ class NorishRealtime:
             if isinstance(payload, dict) and payload.get("mark") == "cursor":
                 return subscribed
             _LOGGER.debug("Norish realtime: change on subscription %s", message.get("id"))
+            self._fire_event(message.get("id"), payload)
             await self._coordinator.async_request_refresh()
         return subscribed
 
+
+
+def event_data(path: str, envelope: Any) -> dict[str, Any]:
+    """Compact event data: kind plus the fields automations need.
+
+    "groceries.onCreated" → kind "groceries.created" with the item names;
+    calendar events carry date, slot and title of the item.
+    """
+    domain, _, name = path.partition(".")
+    event = name[2:] if name.startswith("on") else name
+    snake = "".join(f"_{c.lower()}" if c.isupper() else c for c in event).lstrip("_")
+    data: dict[str, Any] = {"kind": f"{domain}.{snake}"}
+    payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict):
+        return data
+
+    if domain == "groceries":
+        groceries = payload.get("groceries")
+        if isinstance(groceries, list):
+            data["names"] = [
+                g.get("name") for g in groceries if isinstance(g, dict) and g.get("name")
+            ]
+    elif domain == "calendar":
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else payload
+        for key in ("date", "slot"):
+            if item.get(key):
+                data[key] = item[key]
+        title = item.get("recipeName") or item.get("title")
+        if title:
+            data["title"] = title
+    return data

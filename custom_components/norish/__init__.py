@@ -18,9 +18,12 @@ from .const import CONF_NORISH_EMAIL, CONF_NORISH_PASSWORD, DEFAULT_URL, DOMAIN
 from .coordinator import NorishCoordinator
 from .frontend import async_register_card
 from .realtime import NorishRealtime
+from .services import async_register_services, async_unregister_services
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS: list[str] = ["sensor", "todo", "calendar", "camera", "media_player"]
+PLATFORMS: list[str] = [
+    "sensor", "binary_sensor", "todo", "calendar", "camera", "media_player"
+]
 
 
 async def _validate_api_key(hass: HomeAssistant, base_url: str, api_key: str) -> None:
@@ -87,6 +90,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
+    async_register_services(hass)
+
     # Instant updates over Norish's WebSocket; polling stays as fallback
     realtime = NorishRealtime(hass, coordinator)
     realtime.start()
@@ -101,6 +106,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, PLATFORMS
     ):
         hass.data[DOMAIN].pop(entry.entry_id)
+        async_unregister_services(hass)
     return unload_ok
 
 

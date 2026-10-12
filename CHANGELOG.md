@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-10-12
+
+### Added
+- 👩‍🍳 **Cook mode** in `norish-card`: one step at a time in large type,
+  previous/next (also arrow keys), timers for durations in a step that
+  beep and vibrate, screen kept awake while cooking.
+- 🛒 **Shopping list view** (`view: shopping`): lists per store, tap to check
+  off, add items to a chosen list.
+- ➕ **Action `norish.add_recipe_to_groceries`** — a recipe's ingredients onto
+  the shopping list (by recipe, date/slot or number of days), also as a button
+  in the card's recipe view.
+- 🗓️ **Plan meals from the HA calendar** — create (recipe on exact title,
+  otherwise a note) and delete events in Norish.
+- 🗣️ **Assist blueprint** "wat eten we vanavond / morgen?".
+- 🔔 **`norish_change` events** for every change Norish pushes.
+- 🩺 **Status and diagnostics** — "Norish Realtime" and "Norish Last Update"
+  entities, diagnostics download (credentials redacted), repair notice when
+  the WebSocket cannot connect.
+- 🇳🇱 **Dutch translation**.
+
+### Fixed
+- Shopping list items show translated units with a space
+  ("6 eetlepels passata" instead of "6tablespoon passata").
+
+---
+
 ## [1.8.0] - 2026-10-12
 
 ### Added

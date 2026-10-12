@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import time, timedelta
+from datetime import datetime, time, timedelta
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -149,6 +150,7 @@ async def async_setup_entry(
         NorishMealSensor(coordinator, entry, "dinner"),
         NorishMealSensor(coordinator, entry, "snack"),
         NorishWeekPlannerSensor(coordinator, entry),
+        NorishLastUpdateSensor(coordinator, entry),
     ]
 
     async_add_entities(sensors)
@@ -477,3 +479,21 @@ class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
             }
             for i in range(7)
         ]
+
+
+class NorishLastUpdateSensor(CoordinatorEntity, SensorEntity):
+    """When data was last fetched successfully from Norish (diagnostic)."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:cloud-sync-outline"
+
+    def __init__(self, coordinator: NorishCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "Norish Last Update"
+        self._attr_unique_id = f"{entry.entry_id}_last_update"
+        self._attr_device_info = norish_device_info(entry, coordinator.base_url)
+
+    @property
+    def native_value(self) -> datetime | None:
+        return getattr(self.coordinator, "last_success", None)

@@ -1,0 +1,96 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Norish koppelen",
+        "description": "Vul het adres van je Norish-server en een API-key in. Vul optioneel je Norish-inloggegevens in, dan vernieuwt de integratie de API-key automatisch als die verloopt.",
+        "data": {
+          "url": "Norish-adres",
+          "api_key": "API-key",
+          "norish_email": "Norish e-mail of gebruikersnaam (optioneel)",
+          "norish_password": "Norish-wachtwoord (optioneel)"
+        }
+      },
+      "reconfigure": {
+        "title": "Norish opnieuw configureren",
+        "description": "Wijzig het Norish-adres, de API-key of de inloggegevens voor automatisch vernieuwen. Laat de API-key of het wachtwoord leeg om de huidige te behouden.",
+        "data": {
+          "url": "Norish-adres",
+          "api_key": "API-key",
+          "norish_email": "Norish e-mail of gebruikersnaam (optioneel)",
+          "norish_password": "Norish-wachtwoord (optioneel)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Norish opnieuw aanmelden",
+        "description": "Je Norish API-key is verlopen. Vul een nieuwe key in. Je kunt hier ook je Norish-inloggegevens bijwerken om automatisch vernieuwen te herstellen of in te schakelen.",
+        "data": {
+          "api_key": "API-key",
+          "norish_email": "Norish e-mail of gebruikersnaam (optioneel)",
+          "norish_password": "Norish-wachtwoord (optioneel)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbinding mislukt of verlopen. Controleer het adres.",
+      "invalid_auth": "Ongeldige API-key.",
+      "unknown": "Onverwachte fout."
+    },
+    "abort": {
+      "already_configured": "Norish is al ingesteld.",
+      "reconfigure_successful": "Configuratie bijgewerkt.",
+      "reauth_successful": "Opnieuw aanmelden gelukt."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Norish-opties",
+        "description": "Kies hoe vaak Norish wordt bijgewerkt. Een kortere tijd betekent snellere updates, maar meer verzoeken met de API-key.",
+        "data": {
+          "poll_interval": "Update-interval"
+        }
+      }
+    }
+  },
+  "services": {
+    "add_recipe_to_groceries": {
+      "name": "Recept op boodschappenlijst zetten",
+      "description": "Zet de ingrediënten van een recept op de Norish-boodschappenlijst. Zonder recept-ID worden de geplande recepten van de datum (standaard vandaag) gebruikt.",
+      "fields": {
+        "recipe_id": {
+          "name": "Recept-ID",
+          "description": "ID van het Norish-recept. Leeg laten om de geplande recepten te gebruiken."
+        },
+        "date": {
+          "name": "Datum",
+          "description": "Dag van de geplande recepten. Standaard: vandaag."
+        },
+        "slot": {
+          "name": "Maaltijd",
+          "description": "Alleen deze maaltijd van de dag."
+        },
+        "days": {
+          "name": "Dagen",
+          "description": "Aantal dagen vanaf de datum, bijvoorbeeld 7 voor de hele week."
+        }
+      }
+    }
+  },
+  "selector": {
+    "slot": {
+      "options": {
+        "breakfast": "Ontbijt",
+        "lunch": "Lunch",
+        "dinner": "Diner",
+        "snack": "Tussendoortje"
+      }
+    }
+  },
+  "issues": {
+    "realtime_unavailable": {
+      "title": "Realtime-updates van Norish werken niet",
+      "description": "Home Assistant kon de websocket van Norish op {url} niet openen, dus wijzigingen komen alleen binnen met de gewone updates. Draait Norish achter een reverse proxy, zorg dan dat die websocket-verbindingen op /trpc doorstuurt (bij nginx: proxy_http_version 1.1 en de Upgrade/Connection-headers). Deze melding verdwijnt zodra de verbinding werkt."
+    }
+  }
+}

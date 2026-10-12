@@ -25,7 +25,7 @@ def coord():
     c.base_url = "https://n"; c._api_key = "k"; c.hass = MagicMock()
     c._consecutive_auth_failures = 0; c._consecutive_failures = 0
     c._rate_limited_until = None; c._renewal_in_progress = False
-    c.last_success = None; c.stale = False; c._prefetched = {}
+    c.last_success = None; c.stale = False; c._prefetched = {}; c._listeners = {}
     c._prefetch_trpc = AsyncMock()  # update-loop tests stub the batch request
     c._norish_email = ""; c._norish_password = ""
     c._normal_update_interval = timedelta(minutes=15); c.update_interval = timedelta(minutes=15)

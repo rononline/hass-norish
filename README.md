@@ -53,8 +53,51 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 - `custom:norish-card` ships with the integration — no extra resource needed
 - Today's meals as photo tiles, the coming days as a list
 - Tap a meal for the full recipe: times, servings, ingredients and steps
+- **Cook mode**: one step at a time in large type, timers for durations in
+  a step ("8 tot 10 minuten"), screen stays awake
+- **Shopping list view**: lists per store, tap to check off, add items
+- "Add to shopping list" puts a recipe's ingredients on the list
 - Landscape layout for kitchen displays, light/dark theme, NL/EN/DE
 - Keeps showing the last plan (with an "Offline" badge) during outages
+
+### 🗓️ Plan Meals from Home Assistant
+- Create an event in the Norish calendar: a title that matches a recipe
+  plans that recipe, anything else becomes a note ("Uit eten")
+- The meal comes from a prefix ("Diner: Pasta") or the start time
+- Deleting an event removes it from Norish
+
+### 🗣️ Assist: "Wat eten we vanavond?"
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frononline%2Fhass-norish%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnorish%2Fwhats_for_dinner.yaml)
+
+Import the blueprint, create an automation from it and ask Assist
+"wat eten we vanavond?" or "wat eten we morgen?". Sentences and answers
+are inputs, so any language works.
+
+### 🔔 Events for Automations
+Every change Norish pushes fires a `norish_change` event:
+
+| `kind` | Extra data |
+|---|---|
+| `groceries.created` / `groceries.updated` / `groceries.deleted` | `names` |
+| `calendar.item_created` / `item_updated` / `item_moved` / `item_deleted` | `date`, `slot`, `title` |
+| `stores.created` / `stores.updated` / `stores.deleted` | — |
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: norish_change
+    event_data:
+      kind: groceries.created
+actions:
+  - action: notify.mobile_app_phone
+    data:
+      message: "Op de boodschappenlijst: {{ trigger.event.data.names | join(', ') }}"
+```
+
+### 🩺 Status and Diagnostics
+- Diagnostic entities "Norish Realtime" and "Norish Last Update"
+- Download diagnostics (credentials redacted) from the integration page
+- A repair notice explains when realtime updates cannot connect
 
 ### 📷 Camera Entities
 - One camera entity per meal type (Breakfast, Lunch, Dinner, Snack)
@@ -67,7 +110,7 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 - Compatible with dashboard `media-player` cards
 
 ### 🌍 Multilingual
-- 5 languages: 🇩🇪 German · 🇬🇧 English · 🇫🇷 French · 🇪🇸 Spanish · 🇮🇹 Italian
+- 6 languages: 🇳🇱 Dutch · 🇩🇪 German · 🇬🇧 English · 🇫🇷 French · 🇪🇸 Spanish · 🇮🇹 Italian
 
 ---
 
@@ -124,6 +167,18 @@ the key has been idle for a full hour. The integration therefore:
   re-authenticate; the last data stays visible meanwhile
 
 The shortest poll interval is 5 minutes (Options).
+
+### Actions
+
+`norish.add_recipe_to_groceries` puts a recipe's ingredients on the shopping
+list — by `recipe_id`, or the recipes planned on a `date` (default today),
+optionally one `slot`, for a number of `days`:
+
+```yaml
+action: norish.add_recipe_to_groceries
+data:
+  days: 7        # the whole coming week
+```
 
 ### Updating your API Key
 
@@ -184,7 +239,7 @@ Each sensor includes: meal name (state), `image_url`, `recipe_id`, `meal_count`,
 
 ```yaml
 type: custom:norish-card
-view: full          # full | today | week | recipe
+view: full          # full | today | week | recipe | shopping
 # slot: dinner      # view: recipe — always show the next dinner
 # layout: auto      # auto | horizontal (landscape screen) | vertical
 # days: 7
