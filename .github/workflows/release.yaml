@@ -1,0 +1,44 @@
+name: Release
+
+# Creates a GitHub release (and tag) vX.Y.Z whenever the version in
+# custom_components/norish/manifest.json changes on main. HACS only offers
+# updates for releases, so without this every change needed a manual release.
+# Also called by the upstream sync after it bumped the version.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - custom_components/norish/manifest.json
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create release for the manifest version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version custom_components/norish/manifest.json)
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Release ${tag} already exists – nothing to do."
+            exit 0
+          fi
+          gh release create "${tag}" \
+            --target "$(git rev-parse HEAD)" \
+            --title "${tag}" \
+            --generate-notes
+          echo "Created release ${tag}."
