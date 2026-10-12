@@ -16,6 +16,7 @@ from homeassistant.components.todo import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -84,6 +85,15 @@ def _build_entities(
     return entities
 
 
+def _parse_summary(summary: str) -> tuple[str, float | None]:
+    """Split a leading amount off an item: "2 milk" / "1,5x flour" → (name, amount)."""
+    text = summary.strip()
+    match = re.match(r"^(\d+(?:[.,]\d+)?)\s*[x×]?\s+(\S.*)$", text)
+    if not match:
+        return text, None
+    return match.group(2).strip(), float(match.group(1).replace(",", "."))
+
+
 def _grocery_to_todo_item(grocery: dict) -> TodoItem:
     """Convert a Norish grocery dict to a HA TodoItem."""
     item_id: str = grocery.get("id", "")
@@ -139,7 +149,8 @@ class NorishStoreList(CoordinatorEntity, TodoListEntity):
             self._attr_unique_id = f"{entry.entry_id}_shopping_{_slugify(store_name)}"
 
         self._attr_supported_features = (
-            TodoListEntityFeature.UPDATE_TODO_ITEM
+            TodoListEntityFeature.CREATE_TODO_ITEM
+            | TodoListEntityFeature.UPDATE_TODO_ITEM
             | TodoListEntityFeature.DELETE_TODO_ITEM
         )
 
@@ -165,9 +176,19 @@ class NorishStoreList(CoordinatorEntity, TodoListEntity):
             return
         is_done = item.status == TodoItemStatus.COMPLETED
         _LOGGER.debug("Norish: toggle %s → isDone=%s", item.uid, is_done)
-        await self.coordinator.async_toggle_grocery(item.uid, is_done)
+        if not await self.coordinator.async_toggle_grocery(item.uid, is_done):
+            raise HomeAssistantError("Could not update the item in Norish")
 
     async def async_delete_todo_items(self, uids: list[str]) -> None:
         """Delete items — syncs back to Norish immediately."""
         _LOGGER.debug("Norish: delete items %s", uids)
-        await self.coordinator.async_delete_groceries(list(uids))
+        if not await self.coordinator.async_delete_groceries(list(uids)):
+            raise HomeAssistantError("Could not delete the items in Norish")
+
+    async def async_create_todo_item(self, item: TodoItem) -> None:
+        """Add an item to this store's list in Norish ("2 milk" → 2 × milk)."""
+        name, amount = _parse_summary(item.summary or "")
+        if not name:
+            raise HomeAssistantError("Item name is empty")
+        if not await self.coordinator.async_create_grocery(name, amount, self.store_id):
+            raise HomeAssistantError("Could not add the item to Norish")
