@@ -7,15 +7,16 @@
  *
  * type: custom:norish-card
  * entity: sensor.norish_week_planner     # optional, auto-detected
- * view: full | today | week | recipe     # optional, default: full
+ * view: full | today | week | recipe | shopping   # optional, default: full
  * slot: dinner                           # optional, view: recipe only
  * layout: auto | horizontal | vertical   # optional, recipe columns side by side
  * days: 7                                # optional, days in the list (1-7)
  * title: Maaltijden                      # optional
  * norish_url: https://norish.example     # optional, adds an "open in Norish" link
+ * shopping_lists: [todo.norish_ah]       # optional, view: shopping (default: all)
  */
 
-const CARD_VERSION = "1.3.0";
+const CARD_VERSION = "1.4.0";
 
 const I18N = {
   en: {
@@ -28,6 +29,12 @@ const I18N = {
     ingredients: "Ingredients", steps: "Method", hour: "h",
     no_details: "No recipe details available", no_recipe: "No recipe planned",
     offline: "Offline", updated: "updated",
+    cook: "Cook mode", step_of: "Step {n} of {total}", prev: "Previous", next: "Next",
+    done: "Done", close: "Close", to_list: "Add to shopping list",
+    added: "Ingredients added to the shopping list", failed: "That did not work",
+    timer_done: "Timer done", shopping: "Shopping list", add_placeholder: "Add an item…",
+    add: "Add", nothing_needed: "Nothing needed", checked: "checked off",
+    no_lists: "No Norish shopping lists found",
     BREAKFAST: "Breakfast", LUNCH: "Lunch", DINNER: "Dinner", SNACK: "Snack",
   },
   nl: {
@@ -40,6 +47,12 @@ const I18N = {
     ingredients: "Ingrediënten", steps: "Bereiding", hour: "u",
     no_details: "Geen receptdetails beschikbaar", no_recipe: "Geen recept gepland",
     offline: "Offline", updated: "bijgewerkt",
+    cook: "Kookstand", step_of: "Stap {n} van {total}", prev: "Vorige", next: "Volgende",
+    done: "Klaar", close: "Sluiten", to_list: "Op boodschappenlijst",
+    added: "Ingrediënten op de boodschappenlijst gezet", failed: "Dat lukte niet",
+    timer_done: "Timer klaar", shopping: "Boodschappen", add_placeholder: "Iets toevoegen…",
+    add: "Toevoegen", nothing_needed: "Niets nodig", checked: "afgevinkt",
+    no_lists: "Geen Norish-boodschappenlijsten gevonden",
     BREAKFAST: "Ontbijt", LUNCH: "Lunch", DINNER: "Diner", SNACK: "Tussendoortje",
   },
   de: {
@@ -52,6 +65,12 @@ const I18N = {
     ingredients: "Zutaten", steps: "Zubereitung", hour: "Std.",
     no_details: "Keine Rezeptdetails verfügbar", no_recipe: "Kein Rezept geplant",
     offline: "Offline", updated: "aktualisiert",
+    cook: "Kochmodus", step_of: "Schritt {n} von {total}", prev: "Zurück", next: "Weiter",
+    done: "Fertig", close: "Schließen", to_list: "Auf die Einkaufsliste",
+    added: "Zutaten auf die Einkaufsliste gesetzt", failed: "Das hat nicht geklappt",
+    timer_done: "Timer abgelaufen", shopping: "Einkaufsliste", add_placeholder: "Etwas hinzufügen…",
+    add: "Hinzufügen", nothing_needed: "Nichts nötig", checked: "abgehakt",
+    no_lists: "Keine Norish-Einkaufslisten gefunden",
     BREAKFAST: "Frühstück", LUNCH: "Mittagessen", DINNER: "Abendessen", SNACK: "Snack",
   },
 };
@@ -76,6 +95,38 @@ const md = (value) =>
     .replace(/__(.+?)__/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1<em>$2</em>");
 
+/**
+ * Durations in a step ("8 tot 10 minuten", "1 uur", "30 sec") → timers.
+ * A range uses its lower bound, so the timer goes off at the first check.
+ */
+const TIMER_UNITS = [
+  [/^(uur|uren|hours?|hrs?|stunden?|std\.?)$/i, 3600],
+  [/^(minuten|minuut|minutes?|mins?\.?|min\.?)$/i, 60],
+  [/^(seconden|seconde|seconds?|secs?\.?|sekunden?|sek\.?|s)$/i, 1],
+];
+const TIMER_RE = /(\d+(?:[.,]\d+)?)(?:\s*(?:-|–|tot|to|bis)\s*(\d+(?:[.,]\d+)?))?\s*(uur|uren|hours?|hrs?|stunden?|std\.?|minuten|minuut|minutes?|mins?\.?|min\.?|seconden|seconde|seconds?|secs?\.?|sekunden?|sek\.?)(?![a-z])/gi;
+
+function findTimers(text) {
+  const found = [];
+  const seen = new Set();
+  for (const match of String(text || "").matchAll(TIMER_RE)) {
+    const unit = TIMER_UNITS.find(([re]) => re.test(match[3]));
+    if (!unit) continue;
+    const seconds = Math.round(parseFloat(match[1].replace(",", ".")) * unit[1]);
+    if (!seconds || seconds > 24 * 3600 || seen.has(seconds)) continue;
+    seen.add(seconds);
+    found.push({ seconds, label: match[0].trim() });
+  }
+  return found;
+}
+
+function formatClock(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const sec = String(seconds % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
 class NorishCard extends HTMLElement {
   static getStubConfig() {
     return { view: "full" };
@@ -96,6 +147,7 @@ class NorishCard extends HTMLElement {
                 { value: "today", label: "Today only" },
                 { value: "week", label: "Week list only" },
                 { value: "recipe", label: "Next recipe (ingredients + steps)" },
+                { value: "shopping", label: "Shopping lists" },
               ],
             },
           },
@@ -129,25 +181,38 @@ class NorishCard extends HTMLElement {
         },
         { name: "days", selector: { number: { min: 1, max: 7, mode: "box" } } },
         { name: "norish_url", selector: { text: { type: "url" } } },
+        { name: "shopping_lists", selector: { entity: { domain: "todo", multiple: true } } },
       ],
     };
   }
 
   setConfig(config) {
-    if (config.view && !["full", "today", "week", "recipe"].includes(config.view)) {
-      throw new Error("view must be one of: full, today, week, recipe");
+    if (config.view && !["full", "today", "week", "recipe", "shopping"].includes(config.view)) {
+      throw new Error("view must be one of: full, today, week, recipe, shopping");
     }
     if (config.layout && !["auto", "horizontal", "vertical"].includes(config.layout)) {
       throw new Error("layout must be one of: auto, horizontal, vertical");
     }
     this._config = { view: "full", days: 7, layout: "auto", ...config };
     this._selected = undefined;
+    this._cook = undefined;
     this._lastState = undefined;
+    this._shop = this._shop || {};
     this._render();
   }
 
   set hass(hass) {
     this._hass = hass;
+    if (this._config?.view === "shopping") {
+      // Re-load items whenever one of the lists changed (state = open items)
+      const lists = this._shoppingEntities();
+      const key = lists.map((id) => `${id}:${hass.states[id]?.last_updated}`).join("|");
+      if (key !== this._shopKey) {
+        this._shopKey = key;
+        this._loadShopping(lists);
+      }
+      return;
+    }
     const state = hass.states[this._entityId()];
     // Only re-render when our entity (or the language) actually changed
     const key = `${hass.locale?.language || hass.language}`;
@@ -157,8 +222,18 @@ class NorishCard extends HTMLElement {
     this._render();
   }
 
+  disconnectedCallback() {
+    this._releaseWakeLock();
+    clearInterval(this._ticker);
+    this._ticker = undefined;
+  }
+
+  connectedCallback() {
+    if (this._timers?.length) this._ensureTicker();
+  }
+
   getCardSize() {
-    return { today: 4, recipe: 9 }[this._config?.view] ?? 7;
+    return { today: 4, recipe: 9, shopping: 6 }[this._config?.view] ?? 7;
   }
 
   getGridOptions() {
@@ -299,7 +374,7 @@ class NorishCard extends HTMLElement {
     }).join("");
 
     const link = this._config.norish_url && meal.recipe_id
-      ? `<a class="open" href="${esc(this._config.norish_url.replace(/\/$/, ""))}/recipes/${encodeURIComponent(meal.recipe_id)}"
+      ? `<a class="action" href="${esc(this._config.norish_url.replace(/\/$/, ""))}/recipes/${encodeURIComponent(meal.recipe_id)}"
           target="_blank" rel="noopener"><ha-icon icon="mdi:open-in-new"></ha-icon>${esc(this._t("open"))}</a>`
       : "";
 
@@ -332,7 +407,14 @@ class NorishCard extends HTMLElement {
         ${steps ? `<section><h3><ha-icon icon="mdi:chef-hat"></ha-icon>${esc(this._t("steps"))}</h3>
           <ol class="steps">${steps}</ol></section>` : ""}
         ${!steps && !ingredients ? `<div class="nothing">${esc(this._t("no_details"))}</div>` : ""}
-        ${link}
+        <div class="actions">
+          ${steps ? `<button class="action primary" data-action="cook" data-rid="${esc(meal.recipe_id)}"
+            data-date="${esc(day?.date)}" data-type="${esc(meal.type)}">
+            <ha-icon icon="mdi:chef-hat"></ha-icon>${esc(this._t("cook"))}</button>` : ""}
+          ${ingredients && meal.recipe_id ? `<button class="action" data-action="to-list" data-rid="${esc(meal.recipe_id)}">
+            <ha-icon icon="mdi:cart-plus"></ha-icon>${esc(this._t("to_list"))}</button>` : ""}
+          ${link}
+        </div>
       </div>
     </div>`;
   }
@@ -426,18 +508,289 @@ class NorishCard extends HTMLElement {
       time ? ` · ${esc(this._t("updated"))} ${esc(time)}` : ""}</span>`;
   }
 
+  // ---------------------------------------------------------------- cook mode
+
+  _cookSteps(meal) {
+    const steps = [];
+    let section = "";
+    for (const raw of meal.steps || []) {
+      const text = String(raw || "").trim();
+      if (!text) continue;
+      if (text.startsWith("#")) {
+        section = text.replace(/^#+\s*/, "");
+        continue;
+      }
+      steps.push({ text, section });
+    }
+    return steps;
+  }
+
+  _renderCook(meal) {
+    const steps = this._cookSteps(meal);
+    const total = steps.length;
+    const index = Math.max(0, Math.min(this._cook.step, total - 1));
+    this._cook.step = index;
+    const step = steps[index] || { text: "", section: "" };
+    const last = index >= total - 1;
+    const timers = findTimers(step.text).map((t) => `
+      <button class="timer-chip" data-action="timer" data-seconds="${t.seconds}" data-label="${esc(t.label)}">
+        <ha-icon icon="mdi:timer-outline"></ha-icon>${esc(t.label)}</button>`).join("");
+    const ingredients = (meal.ingredients || []).map((ing) => {
+      const name = String(ing.name || "");
+      if (name.trim().startsWith("#")) return `<li class="sub">${esc(name.trim().replace(/^#+\s*/, ""))}</li>`;
+      const qty = [this._amount(ing.amount), ing.unit].filter(Boolean).join(" ");
+      return `<li><span class="qty">${esc(qty)}</span><span class="ing">${esc(name)}</span></li>`;
+    }).join("");
+    const count = this._t("step_of").replace("{n}", index + 1).replace("{total}", total);
+    return `<div class="cook">
+      <div class="cook-top">
+        <button class="icon-btn" data-action="cook-close" title="${esc(this._t("close"))}"
+          aria-label="${esc(this._t("close"))}"><ha-icon icon="mdi:close"></ha-icon></button>
+        <div class="cook-title">${esc(meal.name)}</div>
+        <div class="cook-count">${esc(count)}</div>
+      </div>
+      <div class="cook-progress"><span style="width:${total ? ((index + 1) / total) * 100 : 0}%"></span></div>
+      ${step.section ? `<div class="cook-section">${esc(step.section)}</div>` : ""}
+      <div class="cook-step">${md(step.text)}</div>
+      ${timers ? `<div class="timer-chips">${timers}</div>` : ""}
+      ${ingredients ? `<details class="cook-ing"><summary>${esc(this._t("ingredients"))}</summary>
+        <ul class="ingredients">${ingredients}</ul></details>` : ""}
+      <div class="cook-nav">
+        <button class="nav-btn" data-action="cook-prev" ${index === 0 ? "disabled" : ""}>
+          <ha-icon icon="mdi:chevron-left"></ha-icon>${esc(this._t("prev"))}</button>
+        ${last
+          ? `<button class="nav-btn primary" data-action="cook-close">${esc(this._t("done"))}
+              <ha-icon icon="mdi:check"></ha-icon></button>`
+          : `<button class="nav-btn primary" data-action="cook-next">${esc(this._t("next"))}
+              <ha-icon icon="mdi:chevron-right"></ha-icon></button>`}
+      </div>
+    </div>`;
+  }
+
+  async _requestWakeLock() {
+    try {
+      if ("wakeLock" in navigator && !this._wakeLock) {
+        this._wakeLock = await navigator.wakeLock.request("screen");
+        this._wakeLock.addEventListener("release", () => { this._wakeLock = undefined; });
+      }
+    } catch (err) { /* not allowed (e.g. no HTTPS) – the screen may dim */ }
+    if (!this._onVisible) {
+      this._onVisible = () => {
+        if (document.visibilityState === "visible" && this._cook) this._requestWakeLock();
+      };
+      document.addEventListener("visibilitychange", this._onVisible);
+    }
+  }
+
+  _releaseWakeLock() {
+    try { this._wakeLock?.release(); } catch (err) { /* ignore */ }
+    this._wakeLock = undefined;
+    if (this._onVisible) {
+      document.removeEventListener("visibilitychange", this._onVisible);
+      this._onVisible = undefined;
+    }
+  }
+
+  // ------------------------------------------------------------------- timers
+
+  _startTimer(seconds, label) {
+    this._timers = this._timers || [];
+    this._timers.push({ id: Date.now() + Math.random(), label, end: Date.now() + seconds * 1000, done: false });
+    // Audio may only start after a user gesture – this click is one
+    try {
+      this._audio = this._audio || new (window.AudioContext || window.webkitAudioContext)();
+      this._audio.resume?.();
+    } catch (err) { this._audio = undefined; }
+    this._ensureTicker();
+    this._render();
+  }
+
+  _ensureTicker() {
+    if (this._ticker) return;
+    this._ticker = setInterval(() => this._tick(), 1000);
+  }
+
+  _tick() {
+    const now = Date.now();
+    let changed = false;
+    for (const timer of this._timers || []) {
+      const left = Math.max(0, Math.round((timer.end - now) / 1000));
+      const el = this.shadowRoot?.querySelector(`.timer[data-tid="${timer.id}"] .t-left`);
+      if (el) el.textContent = formatClock(left);
+      if (!left && !timer.done) {
+        timer.done = true;
+        changed = true;
+        this._alarm(timer.label);
+      }
+    }
+    if (!(this._timers || []).some((t) => !t.done)) {
+      clearInterval(this._ticker);
+      this._ticker = undefined;
+    }
+    if (changed) this._render();
+  }
+
+  _alarm(label) {
+    try { navigator.vibrate?.([400, 200, 400, 200, 400]); } catch (err) { /* ignore */ }
+    const ctx = this._audio;
+    if (ctx) {
+      [0, 0.5, 1].forEach((offset) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.25, ctx.currentTime + offset);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.35);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(ctx.currentTime + offset);
+        osc.stop(ctx.currentTime + offset + 0.4);
+      });
+    }
+    this._toast(`${this._t("timer_done")}: ${label}`);
+  }
+
+  _renderTimers() {
+    if (!this._timers?.length) return "";
+    const now = Date.now();
+    return `<div class="timers">${this._timers.map((t) => `
+      <div class="timer ${t.done ? "done" : ""}" data-tid="${t.id}">
+        <ha-icon icon="${t.done ? "mdi:bell-ring" : "mdi:timer-outline"}"></ha-icon>
+        <span class="t-label">${esc(t.label)}</span>
+        <span class="t-left">${formatClock(Math.max(0, Math.round((t.end - now) / 1000)))}</span>
+        <button class="icon-btn small" data-action="timer-cancel" data-tid="${t.id}"
+          aria-label="${esc(this._t("close"))}"><ha-icon icon="mdi:close"></ha-icon></button>
+      </div>`).join("")}</div>`;
+  }
+
+  _toast(message) {
+    this.dispatchEvent(new CustomEvent("hass-notification", {
+      detail: { message }, bubbles: true, composed: true,
+    }));
+  }
+
+  // ---------------------------------------------------------------- shopping
+
+  _shoppingEntities() {
+    if (Array.isArray(this._config?.shopping_lists)) return this._config.shopping_lists;
+    const hass = this._hass;
+    if (!hass) return [];
+    return Object.keys(hass.states)
+      .filter((id) => id.startsWith("todo.") &&
+        (hass.entities?.[id]?.platform === "norish" || id.startsWith("todo.norish")))
+      .sort((a, b) => this._listName(a).localeCompare(this._listName(b)));
+  }
+
+  _listName(entityId) {
+    const name = this._hass?.states[entityId]?.attributes?.friendly_name || entityId;
+    return name.replace(/^Norish\s+/, "");
+  }
+
+  async _loadShopping(lists) {
+    const results = await Promise.all(lists.map(async (entityId) => {
+      try {
+        const res = await this._hass.callWS({ type: "todo/item/list", entity_id: entityId });
+        return [entityId, res.items || []];
+      } catch (err) {
+        return [entityId, this._shop[entityId] || []];
+      }
+    }));
+    this._shop = Object.fromEntries(results);
+    this._render();
+  }
+
+  _renderShopping() {
+    const lists = this._shoppingEntities();
+    if (!lists.length) return `<div class="warning">${esc(this._t("no_lists"))}</div>`;
+    const options = lists.map((id) =>
+      `<option value="${esc(id)}" ${id === this._addTarget ? "selected" : ""}>${esc(this._listName(id))}</option>`).join("");
+    const groups = lists.map((id) => {
+      const items = this._shop[id] || [];
+      const open = items.filter((i) => i.status !== "completed");
+      const doneCount = items.length - open.length;
+      if (!open.length && lists.length > 1 && id !== this._addTarget) return "";
+      const rows = open.map((i) => `
+        <button class="shop-item" data-action="shop-toggle" data-entity="${esc(id)}" data-uid="${esc(i.uid)}">
+          <span class="check"></span><span class="shop-name">${esc(i.summary)}</span></button>`).join("");
+      return `<section class="shop-list">
+        <h3>${esc(this._listName(id))}<span class="shop-count">${open.length}</span></h3>
+        ${rows || `<div class="nothing">${esc(this._t("nothing_needed"))}</div>`}
+        ${doneCount ? `<div class="shop-done">${doneCount} ${esc(this._t("checked"))}</div>` : ""}
+      </section>`;
+    }).join("");
+    return `<form class="shop-add">
+        <input class="shop-input" type="text" enterkeyhint="done" autocomplete="off"
+          placeholder="${esc(this._t("add_placeholder"))}" aria-label="${esc(this._t("add_placeholder"))}">
+        ${lists.length > 1 ? `<select class="shop-target" aria-label="list">${options}</select>` : ""}
+        <button class="action primary" type="submit"><ha-icon icon="mdi:plus"></ha-icon>${esc(this._t("add"))}</button>
+      </form>
+      ${groups || `<div class="empty-today"><ha-icon icon="mdi:check-circle-outline"></ha-icon>
+        <span>${esc(this._t("nothing_needed"))}</span></div>`}`;
+  }
+
+  async _toggleShopItem(entityId, uid) {
+    const item = (this._shop[entityId] || []).find((i) => i.uid === uid);
+    if (!item) return;
+    item.status = "completed";  // optimistic: disappears right away
+    this._render();
+    try {
+      await this._hass.callService("todo", "update_item",
+        { item: uid, status: "completed" }, { entity_id: entityId });
+    } catch (err) {
+      item.status = "needs_action";
+      this._render();
+      this._toast(this._t("failed"));
+    }
+  }
+
+  async _addShopItem() {
+    const input = this.shadowRoot.querySelector(".shop-input");
+    const text = input?.value.trim();
+    if (!text) return;
+    const lists = this._shoppingEntities();
+    const target = this.shadowRoot.querySelector(".shop-target")?.value || this._addTarget || lists[0];
+    this._addTarget = target;
+    input.value = "";
+    try {
+      await this._hass.callService("todo", "add_item", { item: text }, { entity_id: target });
+    } catch (err) {
+      input.value = text;
+      this._toast(this._t("failed"));
+    }
+  }
+
+  async _addRecipeToList(recipeId, button) {
+    if (button) button.disabled = true;
+    try {
+      await this._hass.callService("norish", "add_recipe_to_groceries", { recipe_id: recipeId });
+      this._toast(this._t("added"));
+    } catch (err) {
+      this._toast(`${this._t("failed")}: ${err?.message || err}`);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   _render() {
     if (!this._config) return;
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
       this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
       this.shadowRoot.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter") this._onClick(ev);
+        if (ev.key === "Enter" && ev.target?.tagName !== "INPUT") this._onClick(ev);
+        if (this._cook && (ev.key === "ArrowRight" || ev.key === "ArrowLeft")) {
+          this._cook.step += ev.key === "ArrowRight" ? 1 : -1;
+          this._render();
+        }
+      });
+      this.shadowRoot.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        this._addShopItem();
       });
     }
     const view = this._config.view;
-    const title = this._config.title ?? (view === "recipe" ? "" : this._t("title"));
-    const entityId = this._entityId();
+    const defaultTitle = { recipe: "", shopping: this._t("shopping") }[view];
+    const title = this._config.title ?? (defaultTitle ?? this._t("title"));
+    const shopping = view === "shopping";
+    const entityId = shopping ? undefined : this._entityId();
     const state = entityId && this._hass?.states[entityId];
     const data = this._hass && entityId ? this._weekData(entityId, state) : undefined;
     const badge = data?.offline ? this._offlineBadge(data.lastSuccess) : "";
@@ -445,6 +798,8 @@ class NorishCard extends HTMLElement {
 
     if (!this._hass) {
       body = "";
+    } else if (shopping) {
+      body = this._renderShopping();
     } else if (!data) {
       body = `<div class="warning">${esc(this._t("no_entity"))}</div>`;
     } else {
@@ -455,8 +810,13 @@ class NorishCard extends HTMLElement {
       const selected = sel && this._findMeal(week, (m, d) =>
         m.recipe_id === sel.recipe && d.date === sel.date && m.type === sel.type);
       if (sel && !selected) this._selected = undefined;  // meal no longer planned
+      const cook = this._cook && this._findMeal(week, (m, d) =>
+        m.recipe_id === this._cook.recipe && d.date === this._cook.date && m.type === this._cook.type);
+      if (this._cook && !cook) this._stopCooking();
 
-      if (selected) {
+      if (cook) {
+        body = this._renderCook(cook.meal);
+      } else if (selected) {
         body = this._renderRecipe(selected, view !== "recipe");
       } else if (view === "recipe") {
         const slot = String(this._config.slot || "").toUpperCase();
@@ -483,13 +843,21 @@ class NorishCard extends HTMLElement {
       { weekday: "long", day: "numeric", month: "long" }
     );
 
+    // Keep what is being typed in the shopping field across a re-render
+    const input = this.shadowRoot.querySelector(".shop-input");
+    const typed = input?.value || "";
+    const focused = input && this.shadowRoot.activeElement === input;
+
     this.shadowRoot.innerHTML = `<style>${STYLE}</style>
-      <ha-card>
+      <ha-card class="${this._cook ? "cooking" : ""}">
         ${title ? `<div class="header">
           <div class="title"><ha-icon icon="mdi:chef-hat"></ha-icon>${esc(title)}</div>
           <div class="subtitle">${badge || esc(today)}</div></div>` : ""}
-        <div class="content">${!title && badge ? `<div class="badge-row">${badge}</div>` : ""}${body}</div>
+        <div class="content">${!title && badge ? `<div class="badge-row">${badge}</div>` : ""}${this._renderTimers()}${body}</div>
       </ha-card>`;
+    const newInput = this.shadowRoot.querySelector(".shop-input");
+    if (newInput && typed) newInput.value = typed;
+    if (newInput && focused) newInput.focus();
     // Image not reachable (e.g. not cached yet) → show the slot placeholder
     this.shadowRoot.querySelectorAll("img").forEach((img) => {
       img.addEventListener("error", () => {
@@ -499,9 +867,45 @@ class NorishCard extends HTMLElement {
     });
   }
 
+  _stopCooking() {
+    this._cook = undefined;
+    this._releaseWakeLock();
+  }
+
   _onClick(ev) {
     const path = ev.composedPath();
     if (path.some((el) => el.tagName === "A")) return;  // let links work normally
+    const actionEl = path.find((el) => el.dataset?.action && el.dataset.action !== "back");
+    const action = actionEl?.dataset.action;
+    if (action === "cook") {
+      const { rid, date, type } = actionEl.dataset;
+      this._cook = { recipe: rid, date, type, step: 0 };
+      this._requestWakeLock();
+      this._render();
+      this.shadowRoot.querySelector("ha-card")?.scrollIntoView({ block: "start" });
+      return;
+    }
+    if (action === "cook-close") { this._stopCooking(); this._render(); return; }
+    if (action === "cook-next" || action === "cook-prev") {
+      this._cook.step += action === "cook-next" ? 1 : -1;
+      this._render();
+      return;
+    }
+    if (action === "timer") {
+      this._startTimer(Number(actionEl.dataset.seconds), actionEl.dataset.label);
+      return;
+    }
+    if (action === "timer-cancel") {
+      this._timers = (this._timers || []).filter((t) => String(t.id) !== actionEl.dataset.tid);
+      this._render();
+      return;
+    }
+    if (action === "to-list") { this._addRecipeToList(actionEl.dataset.rid, actionEl); return; }
+    if (action === "shop-toggle") {
+      this._toggleShopItem(actionEl.dataset.entity, actionEl.dataset.uid);
+      return;
+    }
+    if (path.some((el) => el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "FORM")) return;
     if (path.some((el) => el.dataset?.action === "back")) {
       this._selected = undefined;
       this._render();
@@ -702,12 +1106,90 @@ const STYLE = `
     font-weight: 600; color: var(--secondary-text-color);
     font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em;
   }
-  .open {
-    align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
-    padding: 8px 14px; border-radius: 999px; text-decoration: none; font-weight: 500;
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .action {
+    display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px;
+    border: none; border-radius: 999px; cursor: pointer; text-decoration: none;
+    font: inherit; font-weight: 500;
     color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 12%, transparent);
   }
-  .open ha-icon { --mdc-icon-size: 18px; }
+  .action.primary { color: var(--text-primary-color, #fff); background: var(--primary-color); }
+  .action:disabled { opacity: 0.5; cursor: default; }
+  .action ha-icon { --mdc-icon-size: 18px; }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 40px; height: 40px; border: none; border-radius: 50%; cursor: pointer;
+    color: var(--primary-text-color); background: var(--secondary-background-color);
+  }
+  .icon-btn.small { width: 28px; height: 28px; }
+  .icon-btn.small ha-icon { --mdc-icon-size: 16px; }
+
+  /* Cook mode */
+  .cook { display: flex; flex-direction: column; gap: 18px; min-height: 340px; }
+  .cook-top { display: flex; align-items: center; gap: 12px; }
+  .cook-title { flex: 1; min-width: 0; font-weight: 600; font-size: 1.1em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--primary-text-color); }
+  .cook-count { color: var(--secondary-text-color); white-space: nowrap; font-size: 0.95em; }
+  .cook-progress { height: 6px; border-radius: 3px; background: var(--secondary-background-color); overflow: hidden; }
+  .cook-progress span { display: block; height: 100%; background: var(--primary-color); transition: width 0.3s ease; }
+  .cook-section { font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--secondary-text-color); margin-bottom: -10px; }
+  .cook-step { flex: 1; font-size: clamp(1.25em, 3.2cqi, 2.1em); line-height: 1.45; color: var(--primary-text-color); }
+  .timer-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .timer-chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 999px;
+    border: 2px solid var(--primary-color); background: none; color: var(--primary-color);
+    font: inherit; font-weight: 600; font-size: 1.05em; cursor: pointer;
+  }
+  .cook-ing summary { cursor: pointer; color: var(--secondary-text-color); font-weight: 500; padding: 4px 0; }
+  .cook-ing .ingredients { margin-top: 8px; }
+  .cook-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .nav-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 56px;
+    border: none; border-radius: 16px; cursor: pointer; font: inherit; font-size: 1.1em; font-weight: 600;
+    color: var(--primary-text-color); background: var(--secondary-background-color);
+  }
+  .nav-btn.primary { color: var(--text-primary-color, #fff); background: var(--primary-color); }
+  .nav-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* Timers */
+  .timers { display: flex; flex-direction: column; gap: 6px; }
+  .timer {
+    display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 14px; border-radius: 14px;
+    background: color-mix(in srgb, var(--primary-color) 12%, transparent); color: var(--primary-text-color);
+  }
+  .timer ha-icon { color: var(--primary-color); }
+  .t-label { flex: 1; min-width: 0; }
+  .t-left { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.2em; }
+  .timer.done { background: color-mix(in srgb, var(--error-color) 18%, transparent); animation: pulse 1s ease-in-out infinite; }
+  .timer.done ha-icon { color: var(--error-color); }
+  @keyframes pulse { 50% { opacity: 0.6; } }
+
+  /* Shopping list */
+  .shop-add { display: flex; gap: 8px; flex-wrap: wrap; }
+  .shop-input {
+    flex: 1 1 160px; min-width: 0; padding: 10px 14px; border-radius: 999px; font: inherit;
+    border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color);
+  }
+  .shop-target {
+    padding: 8px 10px; border-radius: 999px; font: inherit;
+    border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color);
+  }
+  .shop-list h3 { justify-content: space-between; }
+  .shop-count {
+    margin-left: auto; min-width: 24px; padding: 0 8px; border-radius: 999px; font-size: 0.8em; line-height: 22px;
+    text-align: center; background: var(--secondary-background-color); color: var(--secondary-text-color);
+  }
+  .shop-item {
+    display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 4px; border: none;
+    border-bottom: 1px dashed var(--divider-color); background: none; cursor: pointer; text-align: left;
+    font: inherit; color: var(--primary-text-color);
+  }
+  .shop-item:last-of-type { border-bottom: none; }
+  .check { flex: 0 0 22px; height: 22px; border-radius: 50%; border: 2px solid var(--primary-color); }
+  .shop-item:hover .check { background: color-mix(in srgb, var(--primary-color) 20%, transparent); }
+  .shop-name { min-width: 0; }
+  .shop-done { color: var(--secondary-text-color); font-size: 0.85em; padding-top: 6px; }
   /*
    * Side by side for landscape screens: forced with layout: horizontal,
    * automatic from 600px wide. Two columns (photo + ingredients | steps),

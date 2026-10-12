@@ -6,6 +6,7 @@ Check/uncheck and delete are synced back to the Norish API in real time.
 from __future__ import annotations
 
 import logging
+from typing import Any
 import re
 
 from homeassistant.components.todo import (
@@ -24,6 +25,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .coordinator import NorishCoordinator
 from .entity import norish_device_info
+from .sensor import _localize_unit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -117,8 +119,19 @@ def _parse_summary(summary: str) -> tuple[str, float | None]:
     return match.group(2).strip(), float(match.group(1).replace(",", "."))
 
 
-def _grocery_to_todo_item(grocery: dict) -> TodoItem:
-    """Convert a Norish grocery dict to a HA TodoItem."""
+def _format_amount(amount: Any) -> str:
+    """400.0 → "400", 0.5 → "0.5"."""
+    try:
+        number = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+def _grocery_to_todo_item(
+    grocery: dict, units: dict[str, Any] | None = None, language: str = "en"
+) -> TodoItem:
+    """Convert a Norish grocery dict to a HA TodoItem ("400 gram chicken")."""
     item_id: str = grocery.get("id", "")
     name: str = grocery.get("name") or grocery.get("ingredient") or "Unknown"
     is_done: bool = (
@@ -130,9 +143,11 @@ def _grocery_to_todo_item(grocery: dict) -> TodoItem:
     unit: str = grocery.get("unit", "")
 
     if amount and unit:
-        summary = f"{amount}{unit} {name}"
+        # Norish stores unit keys ("tablespoon"); show them like Norish does
+        unit = _localize_unit(unit, amount, units or {}, language)
+        summary = f"{_format_amount(amount)} {unit} {name}"
     elif amount:
-        summary = f"{amount}× {name}"
+        summary = f"{_format_amount(amount)}× {name}"
     else:
         summary = name
 
@@ -192,7 +207,10 @@ class NorishStoreList(CoordinatorEntity, TodoListEntity):
         else:
             filtered = [g for g in groceries if g.get("storeId") == self.store_id]
 
-        return [_grocery_to_todo_item(g) for g in filtered]
+        units = self.coordinator.data.get("units") or {}
+        hass = getattr(self, "hass", None)
+        language = getattr(getattr(hass, "config", None), "language", None) or "en"
+        return [_grocery_to_todo_item(g, units, language) for g in filtered]
 
     async def async_update_todo_item(self, item: TodoItem) -> None:
         """Toggle item done/undone — syncs back to Norish immediately."""

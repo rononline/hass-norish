@@ -85,3 +85,14 @@ def test_entity_raises_on_failure():
         asyncio.run(e.async_delete_todo_items([G[0]["id"]]))
     with pytest.raises(HomeAssistantError):
         asyncio.run(e.async_create_todo_item(TodoItem(summary="x", status=TodoItemStatus.NEEDS_ACTION)))
+
+
+def test_item_summary_uses_translated_units():
+    from custom_components.norish.todo import _grocery_to_todo_item
+    units = {"tablespoon": {"short": [{"locale": "nl", "name": "el"}], "plural": [{"locale": "nl", "name": "eetlepels"}]}}
+    s = lambda g: _grocery_to_todo_item(g, units, "nl").summary
+    assert s({"id": "1", "name": "passata", "amount": 6, "unit": "tablespoon"}) == "6 eetlepels passata"
+    assert s({"id": "2", "name": "kipfilet", "amount": 400.0, "unit": "gram"}) == "400 gram kipfilet"
+    assert s({"id": "3", "name": "melk", "amount": 2.0, "unit": ""}) == "2× melk"
+    assert s({"id": "4", "name": "bloem", "amount": 0.5, "unit": None}) == "0.5× bloem"
+    assert s({"id": "5", "name": "zout"}) == "zout"
