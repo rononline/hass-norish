@@ -17,6 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import CONF_NORISH_EMAIL, CONF_NORISH_PASSWORD, DEFAULT_URL, DOMAIN
 from .coordinator import NorishCoordinator
 from .frontend import async_register_card
+from .realtime import NorishRealtime
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[str] = ["sensor", "todo", "calendar", "camera", "media_player"]
@@ -85,6 +86,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
+    # Instant updates over Norish's WebSocket; polling stays as fallback
+    realtime = NorishRealtime(hass, coordinator)
+    realtime.start()
+    entry.async_on_unload(realtime.stop)
 
     return True
 

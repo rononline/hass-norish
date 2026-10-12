@@ -88,6 +88,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL, MIN_POLL_INTERVAL
+from .realtime import REALTIME_POLL_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -204,12 +205,49 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._consecutive_failures: int = 0
         # Remember the user-configured interval so we can restore it after backoff.
         self._normal_update_interval = timedelta(seconds=poll_interval)
+        # The user's choice; while realtime updates are connected polling only
+        # runs as a slow safety net (see set_realtime).
+        self._configured_update_interval = self._normal_update_interval
         # Set when Norish reports its request limit; no requests until then.
         self._rate_limited_until: datetime | None = None
         # Last successful update (UTC) and whether the data shown is older
         # because the latest updates failed – exposed to the dashboard card.
         self.last_success: datetime | None = None
         self.stale: bool = False
+
+    @property
+    def api_key(self) -> str:
+        """The API key currently in use (changes after an automatic renewal)."""
+        return self._api_key
+
+    def set_realtime(self, connected: bool) -> None:
+        """Slow polling down while Norish pushes changes over the WebSocket."""
+        if connected:
+            self._normal_update_interval = max(
+                self._configured_update_interval, REALTIME_POLL_INTERVAL
+            )
+        else:
+            self._normal_update_interval = self._configured_update_interval
+        if self._consecutive_failures == 0 and self._rate_limited_until is None:
+            self.update_interval = self._normal_update_interval
+
+    def seconds_until_requests_allowed(self) -> float:
+        """0 when requests may be made, else seconds until they may again.
+
+        Covers a request-limit pause and the nightly quiet window, so the
+        realtime connection does not count against Norish's limit there.
+        """
+        now = dt_util.utcnow()
+        if self._rate_limited_until is not None and now < self._rate_limited_until:
+            return (self._rate_limited_until - now).total_seconds()
+        local = dt_util.now()
+        if QUIET_WINDOW_START <= local.time() < QUIET_WINDOW_END:
+            end = local.replace(
+                hour=QUIET_WINDOW_END.hour, minute=QUIET_WINDOW_END.minute,
+                second=0, microsecond=0,
+            )
+            return max(1.0, (end - local).total_seconds())
+        return 0.0
 
     def _get_headers(self) -> dict[str, str]:
         """Return headers for authenticated API requests."""
