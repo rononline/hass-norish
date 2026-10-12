@@ -124,3 +124,22 @@ def test_ws_url():
     assert c._ws_url() == "wss://norish.example.nl/trpc"
     c = rt.NorishRealtime(SimpleNamespace(), SimpleNamespace(base_url="http://10.0.0.2:3000"))
     assert c._ws_url() == "ws://10.0.0.2:3000/trpc"
+
+
+def test_flapping_connection_backs_off():
+    # Connections that drop quickly must not reconnect at the minimum delay
+    async def go():
+        coord = SimpleNamespace(base_url="http://127.0.0.1:9", api_key="k", set_realtime=lambda c: None,
+                                seconds_until_requests_allowed=lambda: 0.0, async_request_refresh=AsyncMock())
+        client = rt.NorishRealtime(SimpleNamespace(), coord)
+        client._connect_once = AsyncMock(return_value=1006)  # dropped right away
+        sleeps = []
+        async def fake_sleep(s):
+            sleeps.append(s)
+            if len(sleeps) >= 8:
+                raise asyncio.CancelledError
+        with patch.object(rt.asyncio, "sleep", fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await client._run()
+        assert sleeps[:4] == [10, 20, 40, 80] and sleeps[-1] == rt.RECONNECT_MAX
+    asyncio.run(go())

@@ -53,8 +53,10 @@ REALTIME_LAGGED = "REALTIME_LAGGED"
 
 RECONNECT_MIN = 10  # seconds
 RECONNECT_MAX = 900
-# A connection that stayed up this long counts as healthy (resets backoff)
-HEALTHY_AFTER = timedelta(minutes=2)
+# A connection that stayed up this long counts as healthy (resets backoff).
+# Long on purpose: every connect costs one request towards Norish's limit, so
+# a proxy that keeps dropping the socket must not cause a reconnect storm.
+HEALTHY_AFTER = timedelta(minutes=30)
 
 
 class NorishRealtime:
