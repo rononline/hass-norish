@@ -56,11 +56,19 @@
   "services": {
     "add_recipe_to_groceries": {
       "name": "Recept op boodschappenlijst zetten",
-      "description": "Zet de ingrediënten van een recept op de Norish-boodschappenlijst. Zonder recept-ID worden de geplande recepten van de datum (standaard vandaag) gebruikt.",
+      "description": "Zet de ingrediënten van een recept op de Norish-boodschappenlijst: op ID, op naam, of de geplande recepten van een datum (standaard vandaag).",
       "fields": {
         "recipe_id": {
           "name": "Recept-ID",
           "description": "ID van het Norish-recept. Leeg laten om de geplande recepten te gebruiken."
+        },
+        "recipe": {
+          "name": "Receptnaam",
+          "description": "Zoek dit recept in Norish op (bijvoorbeeld vanuit een spraakopdracht); de beste match wordt gebruikt."
+        },
+        "servings": {
+          "name": "Porties",
+          "description": "Reken de hoeveelheden om naar dit aantal porties."
         },
         "date": {
           "name": "Datum",

@@ -891,8 +891,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_request_refresh()
         return True
 
-    async def async_add_recipe_ingredients(self, recipe_id: str) -> tuple[int, str]:
-        """Put a recipe's ingredients on the shopping list.
+    async def async_add_recipe_ingredients(
+        self, recipe_id: str, servings: int | None = None
+    ) -> tuple[int, str]:
+        """Put a recipe's ingredients on the shopping list (optionally rescaled).
 
         Returns (number of items sent, recipe name); (0, "") on failure.
         """
@@ -902,7 +904,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not recipe:
             _LOGGER.error("Norish: recipe %s not found", recipe_id)
             return 0, ""
-        payload = ingredients_for_groceries(recipe)
+        payload = ingredients_for_groceries(recipe, servings)
         if not payload:
             _LOGGER.warning("Norish: recipe %s has no ingredients", recipe_id)
             return 0, ""
@@ -924,6 +926,31 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if isinstance(recipe, dict) and str(recipe.get("name", "")).strip().casefold() == wanted:
                 return recipe
         return None
+
+    async def async_search_recipe(self, query: str) -> dict[str, Any] | None:
+        """Best recipe for a spoken or typed name.
+
+        An exact title wins, then a title that contains the query, then
+        Norish's own first search result.
+        """
+        result = await self._fetch_trpc(
+            "recipes.list",
+            {"search": query, "searchFields": ["title"], "limit": 10},
+        )
+        data = self._safe_get_trpc_result(result, {}) if result else {}
+        recipes = [
+            r for r in ((data or {}).get("recipes", []) if isinstance(data, dict) else [])
+            if isinstance(r, dict) and r.get("name")
+        ]
+        wanted = query.strip().casefold()
+        for match in (
+            lambda name: name == wanted,
+            lambda name: wanted in name,
+        ):
+            for recipe in recipes:
+                if match(str(recipe["name"]).strip().casefold()):
+                    return recipe
+        return recipes[0] if recipes else None
 
     async def async_create_calendar_item(
         self, day: date, slot: str, title: str

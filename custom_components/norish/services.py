@@ -31,6 +31,8 @@ SLOTS = {"breakfast": "Breakfast", "lunch": "Lunch", "dinner": "Dinner", "snack"
 ADD_RECIPE_SCHEMA = vol.Schema(
     {
         vol.Optional("recipe_id"): cv.string,
+        vol.Optional("recipe"): cv.string,
+        vol.Optional("servings"): vol.All(vol.Coerce(int), vol.Range(min=1, max=99)),
         vol.Optional("date"): cv.date,
         vol.Optional("slot"): vol.In(list(SLOTS)),
         vol.Optional("days"): vol.All(vol.Coerce(int), vol.Range(min=1, max=14)),
@@ -67,6 +69,11 @@ async def _add_recipe_to_groceries(call: ServiceCall) -> ServiceResponse:
 
     if recipe_id := call.data.get("recipe_id"):
         recipe_ids = [recipe_id]
+    elif query := (call.data.get("recipe") or "").strip():
+        recipe = await coordinator.async_search_recipe(query)
+        if not recipe or not recipe.get("id"):
+            raise ServiceValidationError(f"No recipe found for '{query}'")
+        recipe_ids = [recipe["id"]]
     else:
         start: date = call.data.get("date") or dt_util.now().date()
         recipe_ids = _planned_recipe_ids(
@@ -78,7 +85,9 @@ async def _add_recipe_to_groceries(call: ServiceCall) -> ServiceResponse:
     added = 0
     names: list[str] = []
     for rid in recipe_ids:
-        count, name = await coordinator.async_add_recipe_ingredients(rid)
+        count, name = await coordinator.async_add_recipe_ingredients(
+            rid, call.data.get("servings")
+        )
         added += count
         if name:
             names.append(name)
@@ -106,8 +115,29 @@ def async_unregister_services(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMAIN, SERVICE_ADD_RECIPE_TO_GROCERIES)
 
 
-def ingredients_for_groceries(recipe: dict[str, Any]) -> list[dict[str, Any]]:
-    """Grocery create payload for a recipe's ingredients (its own measurement system)."""
+def _scaled(amount: Any, factor: float) -> Any:
+    """Amount times factor (rounded); non-numeric amounts stay as they are."""
+    if factor == 1 or amount in (None, ""):
+        return amount
+    try:
+        value = round(float(amount) * factor, 2)
+    except (TypeError, ValueError):
+        return amount
+    return int(value) if value.is_integer() else value
+
+
+def ingredients_for_groceries(
+    recipe: dict[str, Any], servings: int | None = None
+) -> list[dict[str, Any]]:
+    """Grocery create payload for a recipe's ingredients (its own measurement system).
+
+    With servings, amounts are scaled from the recipe's own number of servings.
+    """
+    try:
+        base = float(recipe.get("servings") or 0)
+    except (TypeError, ValueError):
+        base = 0
+    factor = servings / base if servings and base > 0 else 1
     system = recipe.get("systemUsed") or "metric"
     rows = sorted(
         (
@@ -123,7 +153,7 @@ def ingredients_for_groceries(recipe: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "name": row["ingredientName"].strip(),
             "unit": row.get("unit") or None,
-            "amount": row.get("amount"),
+            "amount": _scaled(row.get("amount"), factor),
             "isDone": False,
             # Links the grocery to the recipe, so Norish merges repeats
             "recipeIngredientId": row.get("id"),

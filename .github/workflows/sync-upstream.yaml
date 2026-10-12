@@ -5,9 +5,10 @@ name: Sync upstream
 # HACS offers the upstream changes as an update.
 #
 # The upstream version number in manifest.json always differs from this
-# fork's, so a conflict in that file alone is resolved by keeping this fork's
-# manifest. Any other conflict fails the job and GitHub sends a notification;
-# resolve it manually in that case.
+# fork's, and the fork keeps its own README and CHANGELOG, so conflicts in
+# those files are resolved by keeping this fork's version. Any other conflict
+# (code) fails the job and GitHub sends a notification; resolve it manually
+# in that case.
 
 on:
   schedule:
@@ -34,6 +35,12 @@ jobs:
         id: merge
         env:
           MANIFEST: custom_components/norish/manifest.json
+          # Files where this fork's version always wins on a conflict
+          KEEP_OURS: >-
+            custom_components/norish/manifest.json
+            README.md
+            README_DE.md
+            CHANGELOG.md
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -47,13 +54,22 @@ jobs:
 
           if ! git merge --no-edit upstream/main; then
             conflicted=$(git diff --name-only --diff-filter=U)
-            if [ "$conflicted" != "$MANIFEST" ]; then
-              echo "::error::Merge conflict in: $conflicted"
+            other=""
+            for file in $conflicted; do
+              case " $KEEP_OURS " in
+                *" $file "*) ;;
+                *) other="$other $file" ;;
+              esac
+            done
+            if [ -n "$other" ]; then
+              echo "::error::Merge conflict in:$other"
               exit 1
             fi
-            echo "Only the manifest conflicts (version number) – keeping ours."
-            git checkout --ours "$MANIFEST"
-            git add "$MANIFEST"
+            for file in $conflicted; do
+              echo "Conflict in $file – keeping this fork's version."
+              git checkout --ours -- "$file"
+              git add -- "$file"
+            done
             git commit --no-edit
           fi
 

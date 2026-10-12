@@ -53,12 +53,15 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 - `custom:norish-card` ships with the integration — no extra resource needed
 - Today's meals as photo tiles, the coming days as a list
 - Tap a meal for the full recipe: times, servings, ingredients and steps
+- **Servings**: − / + recalculates the ingredient amounts (and what
+  "Add to shopping list" puts on the list)
 - **Cook mode**: one step at a time in large type, timers for durations in
   a step ("8 tot 10 minuten"), screen stays awake
 - **Shopping list view**: lists per store, tap to check off, add items
 - "Add to shopping list" puts a recipe's ingredients on the list
 - Landscape layout for kitchen displays, light/dark theme, NL/EN/DE
 - Keeps showing the last plan (with an "Offline" badge) during outages
+- `tomorrow_after: "20:00"` — in the evening, show tomorrow's meals instead
 
 ### 🗓️ Plan Meals from Home Assistant
 - Create an event in the Norish calendar: a title that matches a recipe
@@ -72,6 +75,20 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 Import the blueprint, create an automation from it and ask Assist
 "wat eten we vanavond?" or "wat eten we morgen?". Sentences and answers
 are inputs, so any language works.
+
+### 🧺 Assist: a recipe on the shopping list
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frononline%2Fhass-norish%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnorish%2Frecipe_to_groceries.yaml)
+
+"Zet de ingrediënten van lasagne op de boodschappenlijst" looks the recipe up
+in Norish by name and puts its ingredients on the list. "Zet melk op de
+boodschappenlijst" still adds just milk.
+
+### ⏰ Reminder when nothing is planned
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frononline%2Fhass-norish%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnorish%2Fmeal_reminder.yaml)
+
+At a time you choose, checks whether today's (or tomorrow's) dinner is planned
+in Norish and otherwise runs your actions – a notification, a message on a
+speaker. A note like "Uit eten" counts as planned.
 
 ### 🔔 Events for Automations
 Every change Norish pushes fires a `norish_change` event:
@@ -171,13 +188,21 @@ The shortest poll interval is 5 minutes (Options).
 ### Actions
 
 `norish.add_recipe_to_groceries` puts a recipe's ingredients on the shopping
-list — by `recipe_id`, or the recipes planned on a `date` (default today),
-optionally one `slot`, for a number of `days`:
+list — by `recipe_id`, by `recipe` name (best match in Norish), or the recipes
+planned on a `date` (default today), optionally one `slot`, for a number of
+`days`. `servings` scales the amounts:
 
 ```yaml
 action: norish.add_recipe_to_groceries
 data:
   days: 7        # the whole coming week
+```
+
+```yaml
+action: norish.add_recipe_to_groceries
+data:
+  recipe: Lasagne
+  servings: 6
 ```
 
 ### Updating your API Key
@@ -254,6 +279,7 @@ view: full          # full | today | week | recipe | shopping
 # layout: auto      # auto | horizontal (landscape screen) | vertical
 # days: 7
 # norish_url: https://norish.yourdomain.com   # "Open in Norish" link
+# tomorrow_after: "20:00"   # from 20:00 show tomorrow instead of today
 ```
 
 For a kitchen display, put `view: recipe` in a **Panel (single card)** view
@@ -421,16 +447,17 @@ logger:
 
 ---
 
-## 🆕 What's New in v1.9.0
+## 🆕 What's New in v1.10.0
 
-- **Cook mode** in the card — one step at a time, timers, screen stays awake
-- **Shopping list view** in the card, and adding items by voice via Assist
-- **Plan meals** from Home Assistant by creating calendar events
-- **`norish.add_recipe_to_groceries`** action and the "Wat eten we vanavond?" blueprint
-- **`norish_change` events**, diagnostic entities and downloadable diagnostics
+- **Servings** in the card: − / + recalculates ingredient amounts
+- **Tomorrow in the evening**: `tomorrow_after` shows tomorrow's meals from a set time
+- **Blueprints**: a recipe on the shopping list by voice, and a reminder when nothing is planned
+- `norish.add_recipe_to_groceries` accepts a recipe **name** and **servings**
 
-See [CHANGELOG.md](CHANGELOG.md) for the full version history (realtime
-updates arrived in 1.8.0).
+Earlier: cook mode, shopping list view, planning from Home Assistant and
+`norish_change` events (1.9.0), realtime updates (1.8.0).
+
+See [CHANGELOG.md](CHANGELOG.md) for the full version history.
 
 ---
 

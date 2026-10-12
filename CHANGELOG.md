@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-10-12
+
+### Added
+- 🍽️ **Servings in the card** — − / + in the recipe view recalculates the
+  ingredient amounts (also in cook mode); "Add to shopping list" uses them.
+- 🌙 **`tomorrow_after`** card option — from that time on, the today part
+  of the card shows tomorrow's meals.
+- 🧺 **Blueprint: a recipe on the shopping list by voice** ("zet de
+  ingrediënten van lasagne op de boodschappenlijst").
+- ⏰ **Blueprint: reminder when no meal is planned** today or tomorrow.
+- `norish.add_recipe_to_groceries` takes a recipe name (`recipe`) and `servings`.
+
+### Changed
+- Upstream sync keeps this fork's README and CHANGELOG on a conflict, so
+  only real code conflicts need manual work.
+- Dependabot keeps the GitHub Actions up to date.
+- README brought up to date (entities, troubleshooting incl. nginx WebSocket).
+
 ## [1.9.0] - 2026-10-12
 
 ### Added

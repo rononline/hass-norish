@@ -1,0 +1,58 @@
+blueprint:
+  name: Norish – put a recipe on the shopping list
+  description: >-
+    Say "zet de ingrediënten van lasagne op de boodschappenlijst" and the
+    ingredients of that Norish recipe go on the shopping list. The recipe is
+    looked up by name; sentences and answers can be changed to any language.
+  domain: automation
+  source_url: https://github.com/rononline/hass-norish/blob/main/blueprints/automation/norish/recipe_to_groceries.yaml
+  input:
+    sentences:
+      name: Sentences
+      description: >-
+        Sentences with {recipe} where the recipe name is spoken. Keep them
+        distinct from "zet melk op de boodschappenlijst", which adds a single
+        item.
+      default:
+        - zet de ingrediënten (van|voor) {recipe} op [de] boodschappenlijst
+        - zet het recept [van|voor] {recipe} op [de] boodschappenlijst
+        - boodschappen voor {recipe}
+      selector:
+        text:
+          multiple: true
+    answer_ok:
+      name: Answer when added
+      description: "{recipe} is replaced by the recipe name, {count} by the number of items."
+      default: "Ik heb {count} ingrediënten van {recipe} op de boodschappenlijst gezet."
+      selector:
+        text:
+    answer_failed:
+      name: Answer when nothing was found
+      default: "Ik kon in Norish geen recept vinden voor {recipe}."
+      selector:
+        text:
+
+triggers:
+  - trigger: conversation
+    command: !input sentences
+
+variables:
+  answer_ok: !input answer_ok
+  answer_failed: !input answer_failed
+  spoken: "{{ trigger.slots.recipe | default('') }}"
+
+actions:
+  - action: norish.add_recipe_to_groceries
+    data:
+      recipe: "{{ spoken }}"
+    response_variable: result
+    continue_on_error: true
+  - set_conversation_response: >-
+      {% if result is defined and result and result.added %}
+        {{ answer_ok | replace('{recipe}', result.recipes | join(', '))
+                     | replace('{count}', result.added | string) }}
+      {% else %}
+        {{ answer_failed | replace('{recipe}', spoken) }}
+      {% endif %}
+
+mode: parallel

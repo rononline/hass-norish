@@ -1,0 +1,104 @@
+blueprint:
+  name: Norish – reminder when no meal is planned
+  description: >-
+    At a set time, check the Norish calendar and run your actions (for
+    example a notification) when nothing is planned for a meal yet – today
+    or tomorrow. A note such as "Uit eten" counts as planned.
+  domain: automation
+  source_url: https://github.com/rononline/hass-norish/blob/main/blueprints/automation/norish/meal_reminder.yaml
+  input:
+    calendar:
+      name: Norish calendar
+      selector:
+        entity:
+          filter:
+            - integration: norish
+              domain: calendar
+      default: calendar.norish_meal_calendar
+    time:
+      name: Time of the check
+      default: "15:00:00"
+      selector:
+        time:
+    day:
+      name: Day to check
+      default: today
+      selector:
+        select:
+          options:
+            - label: Today
+              value: today
+            - label: Tomorrow
+              value: tomorrow
+    slot:
+      name: Meal
+      default: Dinner
+      selector:
+        select:
+          options:
+            - Breakfast
+            - Lunch
+            - Dinner
+            - Snack
+    weekdays:
+      name: Days of the week
+      description: Only check on these days.
+      default: [mon, tue, wed, thu, fri, sat, sun]
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Monday
+              value: mon
+            - label: Tuesday
+              value: tue
+            - label: Wednesday
+              value: wed
+            - label: Thursday
+              value: thu
+            - label: Friday
+              value: fri
+            - label: Saturday
+              value: sat
+            - label: Sunday
+              value: sun
+    actions:
+      name: Actions
+      description: >-
+        What to do when nothing is planned, e.g. a notification. The
+        variable {{ day }} is "today" or "tomorrow", {{ slot }} the meal.
+      default: []
+      selector:
+        action: {}
+
+triggers:
+  - trigger: time
+    at: !input time
+
+conditions:
+  - condition: time
+    weekday: !input weekdays
+
+variables:
+  calendar: !input calendar
+  day: !input day
+  slot: !input slot
+
+actions:
+  - action: calendar.get_events
+    target:
+      entity_id: !input calendar
+    data:
+      start_date_time: "{{ (today_at() + timedelta(days=1 if day == 'tomorrow' else 0)).isoformat() }}"
+      duration:
+        hours: 24
+    response_variable: agenda
+  - condition: template
+    value_template: >-
+      {% set events = agenda[calendar].events if calendar in agenda else [] %}
+      {{ events | selectattr('description', 'defined')
+                | selectattr('description', 'search', '– ' ~ slot)
+                | list | count == 0 }}
+  - sequence: !input actions
+
+mode: single
