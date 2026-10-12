@@ -15,8 +15,9 @@ from homeassistant.components.todo import (
     TodoListEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -42,6 +43,8 @@ async def async_setup_entry(
     """Set up Norish todo lists — one per store + one for unsorted items."""
     coordinator: NorishCoordinator = hass.data[DOMAIN][entry.entry_id]
 
+    _migrate_unique_ids(hass, entry, coordinator)
+
     # Build the initial set of entities from coordinator data
     entities = _build_entities(coordinator, entry)
     async_add_entities(entities)
@@ -51,6 +54,7 @@ async def async_setup_entry(
 
     def _on_coordinator_update() -> None:
         """Add new store entities discovered after initial setup."""
+        _migrate_unique_ids(hass, entry, coordinator)
         new_entities = [
             e
             for e in _build_entities(coordinator, entry)
@@ -64,6 +68,25 @@ async def async_setup_entry(
     entry.async_on_unload(
         coordinator.async_add_listener(_on_coordinator_update)
     )
+
+
+@callback
+def _migrate_unique_ids(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: NorishCoordinator
+) -> None:
+    """Move store lists from name-based to store-ID-based unique IDs.
+
+    The unique ID used to contain the store name, so renaming a store in
+    Norish created a new entity. The entity ID (and dashboards) are kept.
+    """
+    stores: dict[str, str] = (coordinator.data or {}).get("stores", {})
+    registry = er.async_get(hass)
+    for store_id, store_name in stores.items():
+        old = f"{entry.entry_id}_shopping_{_slugify(store_name)}"
+        new = f"{entry.entry_id}_shopping_{store_id}"
+        entity_id = registry.async_get_entity_id("todo", DOMAIN, old)
+        if entity_id and not registry.async_get_entity_id("todo", DOMAIN, new):
+            registry.async_update_entity(entity_id, new_unique_id=new)
 
 
 def _build_entities(
@@ -146,7 +169,8 @@ class NorishStoreList(CoordinatorEntity, TodoListEntity):
             self._attr_unique_id = f"{entry.entry_id}_shopping_unsorted"
         else:
             self._attr_name = f"Norish {store_name}"
-            self._attr_unique_id = f"{entry.entry_id}_shopping_{_slugify(store_name)}"
+            # Store ID, not name: renaming a store keeps the same entity
+            self._attr_unique_id = f"{entry.entry_id}_shopping_{store_id}"
 
         self._attr_supported_features = (
             TodoListEntityFeature.CREATE_TODO_ITEM

@@ -65,11 +65,16 @@ async def _test_api_key(hass, base_url: str, api_key: str) -> str | None:
                 return ERROR_INVALID_AUTH
             if resp.status >= 400:
                 return ERROR_CANNOT_CONNECT
-    except aiohttp.ClientError:
+    except (aiohttp.ClientError, TimeoutError):
         return ERROR_CANNOT_CONNECT
     except Exception:  # noqa: BLE001
         return ERROR_UNKNOWN
     return None
+
+
+def _normalize_url(url: str) -> str:
+    """Compare Norish URLs without case or trailing-slash differences."""
+    return url.strip().rstrip("/").lower()
 
 
 def _password_selector() -> TextSelector:
@@ -108,6 +113,13 @@ class NorishConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            # The same Norish server twice would poll twice and duplicate entities
+            url = _normalize_url(user_input[CONF_URL])
+            for existing in self._async_current_entries():
+                if _normalize_url(existing.data.get(CONF_URL, "")) == url:
+                    return self.async_abort(reason="already_configured")
+            await self.async_set_unique_id(url)
+
             error = await _test_api_key(
                 self.hass,
                 user_input[CONF_URL],
@@ -143,15 +155,20 @@ class NorishConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         current_email = entry.data.get(CONF_NORISH_EMAIL, "") if entry else ""
 
         if user_input is not None:
+            # Empty API key / password fields keep the stored values
+            new_data = {**(entry.data if entry else {}), **user_input}
+            for key in (CONF_API_KEY, CONF_NORISH_PASSWORD):
+                if not user_input.get(key) and entry and entry.data.get(key):
+                    new_data[key] = entry.data[key]
             error = await _test_api_key(
                 self.hass,
-                user_input[CONF_URL],
-                user_input[CONF_API_KEY],
+                new_data[CONF_URL],
+                new_data.get(CONF_API_KEY, ""),
             )
             if error is None:
                 return self.async_update_reload_and_abort(
                     entry,
-                    data=user_input,
+                    data=new_data,
                     reason="reconfigure_successful",
                 )
             errors["base"] = error
@@ -159,7 +176,7 @@ class NorishConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_URL, default=current_url): str,
-                vol.Required(CONF_API_KEY): str,
+                vol.Optional(CONF_API_KEY, default=""): str,
                 vol.Optional(CONF_NORISH_EMAIL, default=current_email): str,
                 vol.Optional(CONF_NORISH_PASSWORD, default=""): _password_selector(),
             }

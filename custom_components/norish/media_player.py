@@ -92,7 +92,11 @@ class NorishVideoPlayer(CoordinatorEntity, MediaPlayerEntity):
         """Return the title of the current media."""
         event = self._get_today_event()
         if event:
-            return event.get("recipeName") or event.get("name")
+            return (
+                (event.get("_recipe") or {}).get("name")
+                or event.get("recipeName")
+                or event.get("name")
+            )
         return None
 
     @property
@@ -119,7 +123,19 @@ class NorishVideoPlayer(CoordinatorEntity, MediaPlayerEntity):
             return None
         recipe_details: dict = event.get("_recipe") or {}
         if recipe_details:
-            video = recipe_details.get("video") or recipe_details.get("videoUrl")
+            # Newer Norish keeps videos in a gallery (like images); first by order
+            gallery = sorted(
+                (
+                    v for v in recipe_details.get("videos") or []
+                    if isinstance(v, dict) and v.get("video")
+                ),
+                key=lambda v: v.get("order") or 0,
+            )
+            video = (
+                (gallery[0]["video"] if gallery else None)
+                or recipe_details.get("video")
+                or recipe_details.get("videoUrl")
+            )
             if video:
                 base_url = self._get_base_url()
                 return f"{base_url}{video}" if video.startswith("/") else video

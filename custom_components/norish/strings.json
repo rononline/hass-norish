@@ -13,7 +13,7 @@
       },
       "reconfigure": {
         "title": "Reconfigure Norish",
-        "description": "Update your Norish URL, API key, or login credentials for automatic renewal.",
+        "description": "Update your Norish URL, API key, or login credentials for automatic renewal. Leave the API key or password empty to keep the current one.",
         "data": {
           "url": "Norish URL",
           "api_key": "API Key",
@@ -32,7 +32,7 @@
       }
     },
     "error": {
-      "cannot_connect": "Connection failed. Please check the URL.",
+      "cannot_connect": "Connection failed or timed out. Please check the URL.",
       "invalid_auth": "Invalid API key.",
       "unknown": "Unexpected error."
     },
