@@ -223,3 +223,11 @@ def test_fetch_units_cached():
     c2._fetch_trpc = AsyncMock(return_value=None)
     d = {}; asyncio.run(c2._fetch_units_cached(d)); asyncio.run(c2._fetch_units_cached(d))
     assert d["units"] == {} and c2._fetch_trpc.call_count == 1  # retried later, not every poll
+
+def test_ingredient_unit_forms_for_rescaling():
+    r = dict(RECIPE, recipeIngredients=[
+        {"ingredientName": "Komkommer", "amount": 1, "unit": "piece", "order": 1, "systemUsed": "metric"},
+        {"ingredientName": "Zout", "amount": None, "unit": "", "order": 2, "systemUsed": "metric"}])
+    piece, salt = _recipe_extras(r, UNITS, "nl")["ingredients"]
+    assert (piece["unit"], piece["unit_one"], piece["unit_other"]) == ("stuk", "stuk", "stuks")
+    assert "unit_one" not in salt  # no unit: no extra forms

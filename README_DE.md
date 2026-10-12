@@ -201,7 +201,7 @@ Weitere Beispiele in [DASHBOARD_BEISPIELE.yaml](DASHBOARD_BEISPIELE.yaml)
 
 **Keine Mahlzeiten angezeigt / „No meals planned"**
 - Prüfen, ob die Integration aktiv ist (kein Einrichtungsfehler)
-- Vergangene Mahlzeiten werden automatisch ausgeblendet: Frühstück nach 08:30, Mittagessen nach 12:30, Snack nach 15:30, Abendessen nach 18:30
+- Vergangene Mahlzeiten werden automatisch ausgeblendet: Frühstück nach 14:00, Mittagessen nach 18:00, Snack nach 21:00, Abendessen um Mitternacht (6 Stunden nach der Mahlzeit)
 - Zukünftige Tage zeigen immer alle Mahlzeiten
 
 **Keine Bilder angezeigt**

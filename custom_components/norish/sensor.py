@@ -89,16 +89,21 @@ def _recipe_extras(
         ]
         return sorted(rows, key=lambda i: float(i.get("order") or 0))
 
-    ingredients = [
-        {
+    def _ingredient(i: dict[str, Any]) -> dict[str, Any]:
+        unit = i.get("unit") or ""
+        row = {
             "name": i.get("ingredientName") or "",
             "amount": i.get("amount"),
-            "unit": _localize_unit(
-                i.get("unit") or "", i.get("amount"), units or {}, language
-            ),
+            "unit": _localize_unit(unit, i.get("amount"), units or {}, language),
         }
-        for i in _for_system(recipe.get("recipeIngredients"))
-    ]
+        # Both forms, so the card can pick the right one after rescaling
+        one = _localize_unit(unit, 1, units or {}, language)
+        other = _localize_unit(unit, 2, units or {}, language)
+        if one != other:
+            row["unit_one"], row["unit_other"] = one, other
+        return row
+
+    ingredients = [_ingredient(i) for i in _for_system(recipe.get("recipeIngredients"))]
     steps = [s.get("step") or "" for s in _for_system(recipe.get("steps"))]
 
     return {

@@ -17,7 +17,8 @@
  * tomorrow_after: "20:00"                # optional, from then on show tomorrow
  */
 
-const CARD_VERSION = "1.5.0";
+const CARD_VERSION = "1.5.1";
+const SERVINGS_KEY = "norish-card:servings";
 
 const I18N = {
   en: {
@@ -203,7 +204,12 @@ class NorishCard extends HTMLElement {
     this._cook = undefined;
     this._lastState = undefined;
     this._shop = this._shop || {};
-    this._servings = this._servings || {};
+    if (!this._servings) {
+      // Chosen servings survive a reload of the (kitchen) display
+      try {
+        this._servings = JSON.parse(localStorage.getItem(SERVINGS_KEY) || "{}") || {};
+      } catch (err) { this._servings = {}; }
+    }
     this._render();
   }
 
@@ -364,9 +370,11 @@ class NorishCard extends HTMLElement {
       if (name.trim().startsWith("#")) {
         return `<li class="sub">${esc(name.trim().replace(/^#+\s*/, ""))}</li>`;
       }
-      const amount = factor !== 1 && ing.amount !== null && ing.amount !== "" && !Number.isNaN(Number(ing.amount))
-        ? Number(ing.amount) * factor : ing.amount;
-      const qty = [this._amount(amount), ing.unit].filter(Boolean).join(" ");
+      const scale = factor !== 1 && ing.amount !== null && ing.amount !== "" && !Number.isNaN(Number(ing.amount));
+      const amount = scale ? Number(ing.amount) * factor : ing.amount;
+      // Rescaled: pick singular/plural for the new amount ("1,5 stuks")
+      const unit = scale && ing.unit_one ? (amount > 1 ? ing.unit_other : ing.unit_one) : ing.unit;
+      const qty = [this._amount(amount), unit].filter(Boolean).join(" ");
       return `<li><span class="qty">${esc(qty)}</span><span class="ing">${esc(name)}</span></li>`;
     }).join("");
   }
@@ -954,6 +962,9 @@ class NorishCard extends HTMLElement {
       if (now >= 1 && now <= 99) {
         if (now === base) delete this._servings[rid];
         else this._servings[rid] = now;
+        try {
+          localStorage.setItem(SERVINGS_KEY, JSON.stringify(this._servings));
+        } catch (err) { /* storage unavailable – keep for this session */ }
       }
       this._render();
       return;
