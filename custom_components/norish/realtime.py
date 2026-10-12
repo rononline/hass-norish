@@ -44,7 +44,12 @@ SUBSCRIPTIONS: tuple[str, ...] = (
     "stores.onCreated",
     "stores.onUpdated",
     "stores.onDeleted",
+    "recipes.onImported",
+    "recipes.onFailed",
 )
+
+# Only fired as events: they change nothing the integration shows
+EVENT_ONLY: frozenset[str] = frozenset({"recipes.onImported", "recipes.onFailed"})
 
 # Fired on the HA event bus for every change Norish pushes
 EVENT_NORISH_CHANGE = "norish_change"
@@ -270,7 +275,14 @@ class NorishRealtime:
                 return subscribed
             _LOGGER.debug("Norish realtime: change on subscription %s", message.get("id"))
             self._fire_event(message.get("id"), payload)
-            await self._coordinator.async_request_refresh()
+            sub_id = message.get("id")
+            path = (
+                SUBSCRIPTIONS[sub_id - 1]
+                if isinstance(sub_id, int) and 1 <= sub_id <= len(SUBSCRIPTIONS)
+                else None
+            )
+            if path not in EVENT_ONLY:
+                await self._coordinator.async_request_refresh()
         return subscribed
 
 
@@ -303,4 +315,16 @@ def event_data(path: str, envelope: Any) -> dict[str, Any]:
         title = item.get("recipeName") or item.get("title")
         if title:
             data["title"] = title
+    elif domain == "recipes":
+        recipe = payload.get("recipe") if isinstance(payload.get("recipe"), dict) else {}
+        if recipe.get("id"):
+            data["recipe_id"] = recipe["id"]
+        if recipe.get("name"):
+            data["title"] = recipe["name"]
+        # The ID returned by norish.import_recipe (before Norish knew the recipe)
+        if payload.get("pendingRecipeId") or payload.get("recipeId"):
+            data["import_id"] = payload.get("pendingRecipeId") or payload.get("recipeId")
+        for key in ("url", "reason"):
+            if payload.get(key):
+                data[key] = payload[key]
     return data

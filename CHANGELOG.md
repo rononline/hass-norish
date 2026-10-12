@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-10-12
+
+### Added
+- 📥 **Action `norish.import_recipe`** — import a recipe from a web page;
+  answers with the recipe ID and whether it was queued or already exists,
+  and passes on Norish's reason when it refuses (e.g. an import already
+  running, or a video without AI).
+- 📲 **Blueprint: import a shared recipe** — share a page to the Home
+  Assistant app and it is imported; optional actions when done or failed.
+- 🔔 `norish_change` events `recipes.imported` and `recipes.failed`
+  (realtime), without an extra refresh of the meal plan.
+
 ## [1.10.1] - 2026-10-12
 
 ### Fixed
