@@ -53,12 +53,15 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 - `custom:norish-card` ships with the integration — no extra resource needed
 - Today's meals as photo tiles, the coming days as a list
 - Tap a meal for the full recipe: times, servings, ingredients and steps
+- **Servings**: − / + recalculates the ingredient amounts (and what
+  "Add to shopping list" puts on the list)
 - **Cook mode**: one step at a time in large type, timers for durations in
   a step ("8 tot 10 minuten"), screen stays awake
 - **Shopping list view**: lists per store, tap to check off, add items
 - "Add to shopping list" puts a recipe's ingredients on the list
 - Landscape layout for kitchen displays, light/dark theme, NL/EN/DE
 - Keeps showing the last plan (with an "Offline" badge) during outages
+- `tomorrow_after: "20:00"` — in the evening, show tomorrow's meals instead
 
 ### 🗓️ Plan Meals from Home Assistant
 - Create an event in the Norish calendar: a title that matches a recipe
@@ -72,6 +75,20 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 Import the blueprint, create an automation from it and ask Assist
 "wat eten we vanavond?" or "wat eten we morgen?". Sentences and answers
 are inputs, so any language works.
+
+### 🧺 Assist: a recipe on the shopping list
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frononline%2Fhass-norish%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnorish%2Frecipe_to_groceries.yaml)
+
+"Zet de ingrediënten van lasagne op de boodschappenlijst" looks the recipe up
+in Norish by name and puts its ingredients on the list. "Zet melk op de
+boodschappenlijst" still adds just milk.
+
+### ⏰ Reminder when nothing is planned
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frononline%2Fhass-norish%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnorish%2Fmeal_reminder.yaml)
+
+At a time you choose, checks whether today's (or tomorrow's) dinner is planned
+in Norish and otherwise runs your actions – a notification, a message on a
+speaker. A note like "Uit eten" counts as planned.
 
 ### 🔔 Events for Automations
 Every change Norish pushes fires a `norish_change` event:
@@ -171,8 +188,9 @@ The shortest poll interval is 5 minutes (Options).
 ### Actions
 
 `norish.add_recipe_to_groceries` puts a recipe's ingredients on the shopping
-list — by `recipe_id`, or the recipes planned on a `date` (default today),
-optionally one `slot`, for a number of `days`:
+list — by `recipe_id`, by `recipe` name (best match in Norish), or the recipes
+planned on a `date` (default today), optionally one `slot`, for a number of
+`days`. `servings` scales the amounts:
 
 ```yaml
 action: norish.add_recipe_to_groceries
@@ -180,9 +198,16 @@ data:
   days: 7        # the whole coming week
 ```
 
+```yaml
+action: norish.add_recipe_to_groceries
+data:
+  recipe: Lasagne
+  servings: 6
+```
+
 ### Updating your API Key
 
-If your API key expires, Home Assistant will show a **"Reconfigure"** notification automatically. Click it (or use the ⋮ menu on the integration card → **Reconfigure**) to enter a new key — no need to delete and re-add the integration.
+Normally the integration handles this itself (see Troubleshooting). If your API key is deleted or expires without stored credentials, Home Assistant will show a **"Reconfigure"** notification automatically. Click it (or use the ⋮ menu on the integration card → **Reconfigure**) to enter a new key — no need to delete and re-add the integration.
 
 ---
 
@@ -200,18 +225,28 @@ If your API key expires, Home Assistant will show a **"Reconfigure"** notificati
 | `sensor.norish_week_planner` | 7-day meal overview |
 
 Each sensor includes: meal name (state), `image_url`, `recipe_id`, `meal_count`, `meals`, `raw_data`.
+The week planner also has `stale` (true while it shows the last known plan during an outage)
+and `last_success`.
+
+### Diagnostics
+
+| Entity | Description |
+|--------|-------------|
+| `binary_sensor.norish_realtime` | On while the WebSocket to Norish is connected |
+| `sensor.norish_last_update` | Time of the last successful update from Norish |
 
 ### Calendar
 
 | Entity | Description |
 |--------|-------------|
-| `calendar.norish_meal_plan` | Weekly meal calendar |
+| `calendar.norish_meal_calendar` | Meal calendar — also lets you plan meals and notes |
 
 ### Todo
 
 | Entity | Description |
 |--------|-------------|
-| `todo.norish_shopping_list` | Grocery / shopping list |
+| `todo.norish_unsorted` | Groceries without a store |
+| `todo.norish_<store>` | One list per Norish store (e.g. `todo.norish_albert_heijn`) |
 
 ### Cameras
 
@@ -244,6 +279,7 @@ view: full          # full | today | week | recipe | shopping
 # layout: auto      # auto | horizontal (landscape screen) | vertical
 # days: 7
 # norish_url: https://norish.yourdomain.com   # "Open in Norish" link
+# tomorrow_after: "20:00"   # from 20:00 show tomorrow instead of today
 ```
 
 For a kitchen display, put `view: recipe` in a **Panel (single card)** view
@@ -346,9 +382,37 @@ sensor.norish_week_planner:
 
 ## 🔧 Troubleshooting
 
-**Integration shows "Setup error" / stops working after a few hours**
-- Your API key has expired. Go to **Settings → Devices & Services → Norish → ⋮ → Reconfigure** and enter a new key from your Norish settings under **API Keys**.
-- The integration tolerates up to 2 transient auth errors before disabling itself, so brief server hiccups are handled automatically.
+**"Request limit reached" in the log / no updates for a while**
+- Norish allows 500 requests per API key and resets the counter after an hour
+  without requests. The integration pauses until Norish allows requests again
+  and keeps showing the last data (see [API key usage](#api-key-usage)).
+- Raise the poll interval in the integration's **Options** if this happens often.
+
+**Home Assistant asks to re-authenticate**
+- Only happens after 3 rejected requests in a row that are *not* the request
+  limit — usually a deleted or expired key.
+- With your Norish e-mail and password stored (optional, in setup or
+  Reconfigure) the integration creates a new key by itself.
+- Otherwise: **Settings → Devices & Services → Norish → ⋮ → Reconfigure** and
+  enter a new key from Norish under **API Keys**.
+
+**"Norish realtime updates are not available" (Repairs) / Realtime stays off**
+- Home Assistant could not open the WebSocket at `wss://<your norish>/trpc`.
+  Everything keeps working with regular polling; only instant updates are missing.
+- Behind a reverse proxy, forward WebSocket upgrades. For nginx:
+
+  ```nginx
+  location / {
+      proxy_pass http://norish:3000;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_read_timeout 1h;
+  }
+  ```
+
+- The notice disappears by itself once the connection works.
 
 **No meals shown / "No meals planned"**
 - Check the integration is active (not showing a setup error)
@@ -356,11 +420,17 @@ sensor.norish_week_planner:
 - Future days always show all meals regardless of time
 
 **No images displayed**
-- Check if your Norish instance returns image URLs
+- Check that the recipe has a photo in Norish
 - Verify the images are accessible from your Home Assistant host
+- The card and camera entities use the first photo of a recipe's gallery
+
+**The card does not appear / shows an old version**
+- The card is registered automatically; reload the browser (or clear the
+  Companion app's frontend cache) after an update.
 
 **Connection error on setup**
-- Confirm the Server URL is reachable from Home Assistant
+- Confirm the Server URL is reachable from Home Assistant (use `https://` when
+  Norish runs behind a reverse proxy with a certificate)
 - Verify your API key is correct (Settings → Norish → API Keys)
 - Check firewall / reverse proxy settings
 
@@ -377,32 +447,15 @@ logger:
 
 ---
 
-## 🆕 What's New in v1.7.0
+## 🆕 What's New in v1.10.0
 
-- **Calendar notes** — Norish now supports free-text notes on any time slot (e.g. "Going out for dinner"). Notes are now displayed in the Home Assistant calendar:
-  - If a recipe is planned, the note appears in the **event description** (visible when you tap the event).
-  - If no recipe is planned, the note becomes the **event title** — so a slot with "Going out to eat" shows up with that text instead of the generic "Meal" label.
-- Fully backwards-compatible: existing setups without notes are unaffected.
+- **Servings** in the card: − / + recalculates ingredient amounts
+- **Tomorrow in the evening**: `tomorrow_after` shows tomorrow's meals from a set time
+- **Blueprints**: a recipe on the shopping list by voice, and a reminder when nothing is planned
+- `norish.add_recipe_to_groceries` accepts a recipe **name** and **servings**
 
-See [CHANGELOG.md](CHANGELOG.md) for the full version history.
-
----
-
-## 🆕 What's New in v1.6.10
-
-- **Startup timeout fix** — if the Norish server isn't reachable when Home Assistant boots (e.g. HA starts before Norish is ready), the integration now triggers a graceful retry via `ConfigEntryNotReady` instead of crashing permanently with a `TimeoutError`.
-- **Longer validation timeout** — increased from 10 s to 30 s to handle slow server starts and high-latency networks.
-
-See [CHANGELOG.md](CHANGELOG.md) for the full version history.
-
----
-
-## 🆕 What's New in v1.6.9
-
-- **Automatic API key renewal** — when the key is exhausted the integration silently creates a new one using your stored Norish credentials. No manual "Reconfigure" needed.
-- **Optional credentials** — enter your Norish email + password in the setup or reconfigure form to enable auto-renewal. The password is stored as a masked field and never shown in plaintext.
-- **Fallback** — if no credentials are stored, the existing behaviour is kept: after 3 consecutive 401 errors Home Assistant shows the "Reconfigure" notification.
-- **Exponential reconnect backoff** (v1.6.8) — 1st failure → 60 s, 2nd → 5 min, 3rd+ → 10 min before next retry; auto-restores to normal interval on success.
+Earlier: cook mode, shopping list view, planning from Home Assistant and
+`norish_change` events (1.9.0), realtime updates (1.8.0).
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
 
@@ -411,7 +464,11 @@ See [CHANGELOG.md](CHANGELOG.md) for the full version history.
 ## 📚 Documentation
 
 - [CHANGELOG.md](CHANGELOG.md) — Version history
-- [INSTALLATION.md](INSTALLATION.md) — Detailed installation guide
+
+The German guides below come from the original project and describe its
+older versions; this README is the up-to-date reference.
+
+- [INSTALLATION.md](INSTALLATION.md) — Detailed installation guide (German)
 - [DASHBOARD_BEISPIELE.yaml](DASHBOARD_BEISPIELE.yaml) — Dashboard templates
 - [WOCHENPLAN_DASHBOARDS.md](WOCHENPLAN_DASHBOARDS.md) — Week planner dashboard examples
 - [VIDEO_SUPPORT.md](VIDEO_SUPPORT.md) — Video integration guide

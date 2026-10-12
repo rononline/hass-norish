@@ -62,7 +62,7 @@ def test_service_today_dinner():
     c = coord([{"date": today, "slot": "Dinner", "recipeId": "r1"}, {"date": today, "slot": "Lunch", "recipeId": "r2"}])
     c.async_add_recipe_ingredients = AsyncMock(return_value=(2, "Wraps"))
     assert _call(c, slot="dinner") == {"added": 2, "recipes": ["Wraps"]}
-    c.async_add_recipe_ingredients.assert_awaited_once_with("r1")
+    c.async_add_recipe_ingredients.assert_awaited_once_with("r1", None)
 
 
 def test_service_days_and_recipe_id():
@@ -74,7 +74,54 @@ def test_service_days_and_recipe_id():
     assert [a.args[0] for a in c.async_add_recipe_ingredients.await_args_list] == ["r1", "r3"]  # no duplicates
     c.async_add_recipe_ingredients.reset_mock()
     _call(c, recipe_id="r9")
-    c.async_add_recipe_ingredients.assert_awaited_once_with("r9")
+    c.async_add_recipe_ingredients.assert_awaited_once_with("r9", None)
+
+
+def _recipes(*names):
+    return [{"result": {"data": {"json": {"recipes": [
+        {"id": f"r{i}", "name": n} for i, n in enumerate(names, start=1)]}}}}]
+
+
+@pytest.mark.parametrize("names,query,expected", [
+    (("Lasagne bolognese", "Lasagne"), "lasagne", "r2"),        # exact title wins
+    (("Pasta pesto", "Lasagne bolognese"), "lasagne", "r2"),    # then a title containing it
+    (("Ovenschotel",), "lasagne", "r1"),                        # then Norish's own first hit
+    ((), "lasagne", None),
+])
+def test_search_recipe(names, query, expected):
+    c = coord()
+    c._fetch_trpc = AsyncMock(return_value=_recipes(*names))
+    found = asyncio.run(c.async_search_recipe(query))
+    assert (found or {}).get("id") == expected
+
+
+def test_service_by_name_and_servings():
+    c = coord()
+    c.async_search_recipe = AsyncMock(return_value={"id": "r7", "name": "Lasagne"})
+    c.async_add_recipe_ingredients = AsyncMock(return_value=(5, "Lasagne"))
+    assert _call(c, recipe=" lasagne ", servings=6) == {"added": 5, "recipes": ["Lasagne"]}
+    c.async_search_recipe.assert_awaited_once_with("lasagne")
+    c.async_add_recipe_ingredients.assert_awaited_once_with("r7", 6)
+    c.async_search_recipe = AsyncMock(return_value=None)
+    with pytest.raises(ServiceValidationError):
+        _call(c, recipe="onbekend")
+
+
+def test_ingredients_scaled_to_servings():
+    recipe = {**RECIPE, "servings": 4}
+    payload = svc.ingredients_for_groceries(recipe, 6)
+    assert [p["amount"] for p in payload] == [600, 9]
+    assert [p["amount"] for p in svc.ingredients_for_groceries(recipe, 3)] == [300, 4.5]
+    # unknown base servings or odd amounts: left as they are
+    assert [p["amount"] for p in svc.ingredients_for_groceries(RECIPE, 6)] == [400, 6]
+    assert svc._scaled("snufje", 2) == "snufje" and svc._scaled(None, 2) is None
+
+
+def test_add_recipe_ingredients_scaled():
+    c = coord()
+    c._cached_recipes = {"r1": {**RECIPE, "servings": 2}}
+    asyncio.run(c.async_add_recipe_ingredients("r1", 4))
+    assert [p["amount"] for p in c._post_trpc.call_args.args[1]] == [800, 12]
 
 
 def test_service_nothing_planned():

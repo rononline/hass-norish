@@ -4,6 +4,16 @@ add_recipe_to_groceries:
       example: "0f6c2f5e-9a4d-4c43-9a51-2a1f0c3e8b11"
       selector:
         text:
+    recipe:
+      example: "Lasagne"
+      selector:
+        text:
+    servings:
+      selector:
+        number:
+          min: 1
+          max: 99
+          mode: box
     date:
       selector:
         date:

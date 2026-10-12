@@ -14,9 +14,10 @@
  * title: Maaltijden                      # optional
  * norish_url: https://norish.example     # optional, adds an "open in Norish" link
  * shopping_lists: [todo.norish_ah]       # optional, view: shopping (default: all)
+ * tomorrow_after: "20:00"                # optional, from then on show tomorrow
  */
 
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.5.0";
 
 const I18N = {
   en: {
@@ -35,6 +36,7 @@ const I18N = {
     timer_done: "Timer done", shopping: "Shopping list", add_placeholder: "Add an item…",
     add: "Add", nothing_needed: "Nothing needed", checked: "checked off",
     no_lists: "No Norish shopping lists found",
+    fewer: "Fewer servings", more: "More servings", nothing_tomorrow: "Nothing planned for tomorrow",
     BREAKFAST: "Breakfast", LUNCH: "Lunch", DINNER: "Dinner", SNACK: "Snack",
   },
   nl: {
@@ -53,6 +55,7 @@ const I18N = {
     timer_done: "Timer klaar", shopping: "Boodschappen", add_placeholder: "Iets toevoegen…",
     add: "Toevoegen", nothing_needed: "Niets nodig", checked: "afgevinkt",
     no_lists: "Geen Norish-boodschappenlijsten gevonden",
+    fewer: "Minder porties", more: "Meer porties", nothing_tomorrow: "Morgen nog niets gepland",
     BREAKFAST: "Ontbijt", LUNCH: "Lunch", DINNER: "Diner", SNACK: "Tussendoortje",
   },
   de: {
@@ -71,6 +74,7 @@ const I18N = {
     timer_done: "Timer abgelaufen", shopping: "Einkaufsliste", add_placeholder: "Etwas hinzufügen…",
     add: "Hinzufügen", nothing_needed: "Nichts nötig", checked: "abgehakt",
     no_lists: "Keine Norish-Einkaufslisten gefunden",
+    fewer: "Weniger Portionen", more: "Mehr Portionen", nothing_tomorrow: "Für morgen nichts geplant",
     BREAKFAST: "Frühstück", LUNCH: "Mittagessen", DINNER: "Abendessen", SNACK: "Snack",
   },
 };
@@ -180,6 +184,7 @@ class NorishCard extends HTMLElement {
           },
         },
         { name: "days", selector: { number: { min: 1, max: 7, mode: "box" } } },
+        { name: "tomorrow_after", selector: { time: {} } },
         { name: "norish_url", selector: { text: { type: "url" } } },
         { name: "shopping_lists", selector: { entity: { domain: "todo", multiple: true } } },
       ],
@@ -198,6 +203,7 @@ class NorishCard extends HTMLElement {
     this._cook = undefined;
     this._lastState = undefined;
     this._shop = this._shop || {};
+    this._servings = this._servings || {};
     this._render();
   }
 
@@ -215,7 +221,7 @@ class NorishCard extends HTMLElement {
     }
     const state = hass.states[this._entityId()];
     // Only re-render when our entity (or the language) actually changed
-    const key = `${hass.locale?.language || hass.language}`;
+    const key = `${hass.locale?.language || hass.language}|${this._tomorrowMode()}`;
     if (state === this._lastState && key === this._lastKey) return;
     this._lastState = state;
     this._lastKey = key;
@@ -335,6 +341,51 @@ class NorishCard extends HTMLElement {
     return new Intl.NumberFormat(this._lang_full(), { maximumFractionDigits: 2 }).format(num);
   }
 
+  /** After the configured tomorrow_after time, today's part shows tomorrow. */
+  _tomorrowMode() {
+    const match = /^(\d{1,2}):(\d{2})/.exec(String(this._config?.tomorrow_after || ""));
+    if (!match) return false;
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes() >= Number(match[1]) * 60 + Number(match[2]);
+  }
+
+  /** Servings of a recipe: as written, as chosen in the card, and the factor. */
+  _portions(meal) {
+    const base = Number(meal.servings);
+    if (!base || base <= 0) return { base: 0, now: 0, factor: 1 };
+    const now = this._servings?.[meal.recipe_id] || base;
+    return { base, now, factor: now / base };
+  }
+
+  _ingredientList(meal) {
+    const { factor } = this._portions(meal);
+    return (meal.ingredients || []).map((ing) => {
+      const name = String(ing.name || "");
+      if (name.trim().startsWith("#")) {
+        return `<li class="sub">${esc(name.trim().replace(/^#+\s*/, ""))}</li>`;
+      }
+      const amount = factor !== 1 && ing.amount !== null && ing.amount !== "" && !Number.isNaN(Number(ing.amount))
+        ? Number(ing.amount) * factor : ing.amount;
+      const qty = [this._amount(amount), ing.unit].filter(Boolean).join(" ");
+      return `<li><span class="qty">${esc(qty)}</span><span class="ing">${esc(name)}</span></li>`;
+    }).join("");
+  }
+
+  _servingsMeta(meal) {
+    const { base, now } = this._portions(meal);
+    if (!base) return "";
+    const rid = esc(meal.recipe_id);
+    return `<div class="meta-item"><ha-icon icon="mdi:account-group-outline"></ha-icon>
+      <div><div class="meta-label">${esc(this._t("servings"))}</div>
+      <div class="stepper">
+        <button class="step-btn" data-action="serv-dec" data-rid="${rid}" ${now <= 1 ? "disabled" : ""}
+          title="${esc(this._t("fewer"))}" aria-label="${esc(this._t("fewer"))}"><ha-icon icon="mdi:minus"></ha-icon></button>
+        <span class="meta-value ${now !== base ? "changed" : ""}">${now}</span>
+        <button class="step-btn" data-action="serv-inc" data-rid="${rid}"
+          title="${esc(this._t("more"))}" aria-label="${esc(this._t("more"))}"><ha-icon icon="mdi:plus"></ha-icon></button>
+      </div></div></div>`;
+  }
+
   /** Find a meal (and its day) in week_data. */
   _findMeal(week, wanted) {
     for (const [index, day] of week.entries()) {
@@ -351,17 +402,10 @@ class NorishCard extends HTMLElement {
       ["prep", "mdi:knife", this._minutes(meal.prep_minutes)],
       ["cook", "mdi:pot-steam-outline", this._minutes(meal.cook_minutes)],
       ["total", "mdi:clock-outline", this._minutes(meal.total_minutes)],
-      ["servings", "mdi:account-group-outline", meal.servings ? String(meal.servings) : ""],
     ].filter(([, , value]) => value);
+    const servings = this._servingsMeta(meal);
 
-    const ingredients = (meal.ingredients || []).map((ing) => {
-      const name = String(ing.name || "");
-      if (name.trim().startsWith("#")) {
-        return `<li class="sub">${esc(name.trim().replace(/^#+\s*/, ""))}</li>`;
-      }
-      const qty = [this._amount(ing.amount), ing.unit].filter(Boolean).join(" ");
-      return `<li><span class="qty">${esc(qty)}</span><span class="ing">${esc(name)}</span></li>`;
-    }).join("");
+    const ingredients = this._ingredientList(meal);
 
     let number = 0;
     const steps = (meal.steps || []).map((step) => {
@@ -394,10 +438,10 @@ class NorishCard extends HTMLElement {
             <div class="hero-name">${esc(meal.name)}</div>
           </div>
         </div>
-        ${meta.length ? `<div class="meta">${meta.map(([key, icon, value]) => `
+        ${meta.length || servings ? `<div class="meta">${meta.map(([key, icon, value]) => `
           <div class="meta-item"><ha-icon icon="${icon}"></ha-icon>
             <div><div class="meta-label">${esc(this._t(key))}</div>
-            <div class="meta-value">${esc(value)}</div></div></div>`).join("")}</div>` : ""}
+            <div class="meta-value">${esc(value)}</div></div></div>`).join("")}${servings}</div>` : ""}
         ${meal.description ? `<p class="description">${md(meal.description)}</p>` : ""}
       </div>
       ${ingredients ? `<div class="recipe-ing"><section>
@@ -419,12 +463,13 @@ class NorishCard extends HTMLElement {
     </div>`;
   }
 
-  _renderToday(today, upcoming) {
+  _renderToday(today, tomorrow = false) {
     const meals = today?.meals || [];
+    const heading = tomorrow ? `<div class="day-heading">${esc(this._t("tomorrow"))}</div>` : "";
     if (!meals.length) {
-      return `<div class="empty-today">
+      return `${heading}<div class="empty-today">
         <ha-icon icon="mdi:check-circle-outline"></ha-icon>
-        <span>${esc(this._t("nothing_today"))}</span></div>`;
+        <span>${esc(this._t(tomorrow ? "nothing_tomorrow" : "nothing_today"))}</span></div>`;
     }
     const tiles = meals.map((meal) => {
       const slot = this._slot(meal);
@@ -440,7 +485,7 @@ class NorishCard extends HTMLElement {
         </div>
       </div>`;
     }).join("");
-    return `<div class="tiles count-${Math.min(meals.length, 4)}">${tiles}</div>`;
+    return `${heading}<div class="tiles count-${Math.min(meals.length, 4)}">${tiles}</div>`;
   }
 
   _renderWeek(days, startIndex) {
@@ -535,12 +580,7 @@ class NorishCard extends HTMLElement {
     const timers = findTimers(step.text).map((t) => `
       <button class="timer-chip" data-action="timer" data-seconds="${t.seconds}" data-label="${esc(t.label)}">
         <ha-icon icon="mdi:timer-outline"></ha-icon>${esc(t.label)}</button>`).join("");
-    const ingredients = (meal.ingredients || []).map((ing) => {
-      const name = String(ing.name || "");
-      if (name.trim().startsWith("#")) return `<li class="sub">${esc(name.trim().replace(/^#+\s*/, ""))}</li>`;
-      const qty = [this._amount(ing.amount), ing.unit].filter(Boolean).join(" ");
-      return `<li><span class="qty">${esc(qty)}</span><span class="ing">${esc(name)}</span></li>`;
-    }).join("");
+    const ingredients = this._ingredientList(meal);
     const count = this._t("step_of").replace("{n}", index + 1).replace("{total}", total);
     return `<div class="cook">
       <div class="cook-top">
@@ -759,8 +799,10 @@ class NorishCard extends HTMLElement {
 
   async _addRecipeToList(recipeId, button) {
     if (button) button.disabled = true;
+    const data = { recipe_id: recipeId };
+    if (this._servings?.[recipeId]) data.servings = this._servings[recipeId];
     try {
-      await this._hass.callService("norish", "add_recipe_to_groceries", { recipe_id: recipeId });
+      await this._hass.callService("norish", "add_recipe_to_groceries", data);
       this._toast(this._t("added"));
     } catch (err) {
       this._toast(`${this._t("failed")}: ${err?.message || err}`);
@@ -804,6 +846,8 @@ class NorishCard extends HTMLElement {
       body = `<div class="warning">${esc(this._t("no_entity"))}</div>`;
     } else {
       const week = data.week;
+      // tomorrow_after: from that time on, "today" means tomorrow
+      const offset = this._tomorrowMode() && week.length > 1 && week[0].is_today ? 1 : 0;
       const days = Math.max(1, Math.min(7, Number(this._config.days) || 7));
       const hasAny = week.some((d) => (d.meals || []).length);
       const sel = this._selected;
@@ -820,8 +864,9 @@ class NorishCard extends HTMLElement {
         body = this._renderRecipe(selected, view !== "recipe");
       } else if (view === "recipe") {
         const slot = String(this._config.slot || "").toUpperCase();
-        const next = this._findMeal(week, (m) =>
-          m.recipe_id && (!slot || String(m.type).toUpperCase() === slot));
+        const next = this._findMeal(week, (m, d) =>
+          m.recipe_id && d.date >= week[offset].date &&
+          (!slot || String(m.type).toUpperCase() === slot));
         body = next
           ? this._renderRecipe(next, false)
           : `<div class="empty-today"><ha-icon icon="mdi:silverware-fork-knife"></ha-icon>
@@ -830,11 +875,12 @@ class NorishCard extends HTMLElement {
         body = `<div class="empty-week"><ha-icon icon="mdi:calendar-blank-outline"></ha-icon>
           <span>${esc(this._t("nothing_week"))}</span></div>`;
       } else if (view === "today") {
-        body = this._renderToday(week[0]);
+        body = this._renderToday(week[offset], offset === 1);
       } else if (view === "week") {
-        body = this._renderWeek(week.slice(0, days), 0);
+        body = this._renderWeek(week.slice(offset, days), offset);
       } else {
-        body = this._renderToday(week[0]) + this._renderWeek(week.slice(1, days), 1);
+        body = this._renderToday(week[offset], offset === 1) +
+          this._renderWeek(week.slice(offset + 1, days), offset + 1);
       }
     }
 
@@ -897,6 +943,18 @@ class NorishCard extends HTMLElement {
     }
     if (action === "timer-cancel") {
       this._timers = (this._timers || []).filter((t) => String(t.id) !== actionEl.dataset.tid);
+      this._render();
+      return;
+    }
+    if (action === "serv-dec" || action === "serv-inc") {
+      const rid = actionEl.dataset.rid;
+      const found = this._cache && this._findMeal(this._cache.week, (m) => m.recipe_id === rid);
+      const base = Number(found?.meal.servings) || 1;
+      const now = (this._servings[rid] || base) + (action === "serv-inc" ? 1 : -1);
+      if (now >= 1 && now <= 99) {
+        if (now === base) delete this._servings[rid];
+        else this._servings[rid] = now;
+      }
       this._render();
       return;
     }
@@ -1075,6 +1133,20 @@ const STYLE = `
   }
   .meta-label { font-weight: 600; color: var(--primary-text-color); font-size: 0.9em; }
   .meta-value { color: var(--secondary-text-color); font-size: 0.9em; }
+  .meta-value.changed { color: var(--primary-color); font-weight: 600; }
+  .stepper { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  .stepper .meta-value { min-width: 1.5em; text-align: center; }
+  .step-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; padding: 0; border: none; border-radius: 50%; cursor: pointer;
+    color: var(--primary-text-color); background: var(--secondary-background-color);
+  }
+  .step-btn[disabled] { opacity: 0.4; cursor: default; }
+  .meta-item .step-btn ha-icon { padding: 0; background: none; color: inherit; --mdc-icon-size: 16px; }
+  .day-heading {
+    margin: 0 0 8px; font-weight: 600; font-size: 0.95em; color: var(--primary-color);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
   .description { margin: 0; color: var(--secondary-text-color); line-height: 1.5; }
   section h3 {
     display: flex; align-items: center; gap: 8px; margin: 0 0 10px;

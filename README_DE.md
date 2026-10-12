@@ -9,6 +9,12 @@
 
 [🇬🇧 English Version](README.md)
 
+> **Hinweis:** Dies ist ein Fork von [Caps3n/hass-norish](https://github.com/Caps3n/hass-norish).
+> Diese deutsche Anleitung beschreibt den Stand des Originalprojekts. Neuere
+> Funktionen dieses Forks (Dashboard-Karte mit Kochmodus, Echtzeit-Updates,
+> Einkaufslisten-Ansicht, Mahlzeiten planen, Aktionen und Events) sind in der
+> [englischen README](README.md) beschrieben.
+
 Eine vollständige Home Assistant Integration für [Norish](https://github.com/norish-recipes/norish) — die Open-Source-App für Rezepte und Essensplanung.
 
 > Verbindet deine Norish-Instanz mit Home Assistant: Mahlzeiten-Sensoren, Einkaufsliste, Kalender, Rezeptbilder und Video-Unterstützung — alles in einer Integration.

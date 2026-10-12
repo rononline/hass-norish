@@ -56,3 +56,38 @@ def test_answers(sentence, expected):
 def test_nothing_planned():
     assert _answer("wat eten we vanavond", [{"meals": []}]) == "Daar staat in Norish nog niets voor gepland."
     assert _answer("wat eten we morgen", []) == "Daar staat in Norish nog niets voor gepland."
+
+
+BLUEPRINTS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "blueprints", "automation", "norish")
+
+
+@pytest.mark.parametrize("name", ["meal_reminder.yaml", "recipe_to_groceries.yaml"])
+def test_other_blueprints_are_valid(name):
+    bp = Blueprint(load_yaml(os.path.join(BLUEPRINTS, name)), expected_domain="automation",
+                   schema=BLUEPRINT_SCHEMA)
+    config = BlueprintInputs(bp, {"use_blueprint": {"path": f"norish/{name}", "input": {}}}).async_substitute()
+    assert config["triggers"] and config["actions"]
+
+
+def _reminder_fires(events, slot="Dinner"):
+    raw = load_yaml(os.path.join(BLUEPRINTS, "meal_reminder.yaml"))
+    template = raw["actions"][1]["value_template"]
+    env = jinja2.Environment()
+    env.tests["search"] = lambda value, pattern: __import__("re").search(pattern, value) is not None
+    out = env.from_string(template).render(
+        agenda={"calendar.norish_meal_calendar": {"events": events}},
+        calendar="calendar.norish_meal_calendar", slot=slot,
+    )
+    return out.strip() == "True"
+
+
+def test_reminder_condition():
+    lunch = {"summary": "Soep", "description": "Norish – Lunch"}
+    dinner = {"summary": "Wraps", "description": "Norish – Dinner"}
+    note = {"summary": "Uit eten", "description": "Norish – Dinner (note): Uit eten"}
+    other = {"summary": "Verjaardag"}  # not from Norish: no description
+    assert _reminder_fires([]) is True
+    assert _reminder_fires([lunch, other]) is True
+    assert _reminder_fires([lunch, dinner]) is False
+    assert _reminder_fires([note]) is False
+    assert _reminder_fires([lunch], slot="Lunch") is False

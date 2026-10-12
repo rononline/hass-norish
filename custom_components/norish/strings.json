@@ -56,11 +56,19 @@
   "services": {
     "add_recipe_to_groceries": {
       "name": "Add recipe to shopping list",
-      "description": "Puts the ingredients of a recipe on the Norish shopping list. Without a recipe ID, the recipes planned for the date (default today) are used.",
+      "description": "Put a recipe's ingredients on the Norish shopping list: by ID, by name, or the recipes planned on a date (default today).",
       "fields": {
         "recipe_id": {
           "name": "Recipe ID",
           "description": "Norish recipe ID. Leave empty to use the planned recipes."
+        },
+        "recipe": {
+          "name": "Recipe name",
+          "description": "Search Norish for this recipe (e.g. from a voice command); the best match is used."
+        },
+        "servings": {
+          "name": "Servings",
+          "description": "Scale the amounts to this number of servings."
         },
         "date": {
           "name": "Date",
