@@ -52,5 +52,45 @@
         }
       }
     }
+  },
+  "services": {
+    "add_recipe_to_groceries": {
+      "name": "Add recipe to shopping list",
+      "description": "Puts the ingredients of a recipe on the Norish shopping list. Without a recipe ID, the recipes planned for the date (default today) are used.",
+      "fields": {
+        "recipe_id": {
+          "name": "Recipe ID",
+          "description": "Norish recipe ID. Leave empty to use the planned recipes."
+        },
+        "date": {
+          "name": "Date",
+          "description": "Day of the planned recipes. Default: today."
+        },
+        "slot": {
+          "name": "Meal",
+          "description": "Only this meal of the day."
+        },
+        "days": {
+          "name": "Days",
+          "description": "Number of days starting at the date, e.g. 7 for the whole week."
+        }
+      }
+    }
+  },
+  "selector": {
+    "slot": {
+      "options": {
+        "breakfast": "Breakfast",
+        "lunch": "Lunch",
+        "dinner": "Dinner",
+        "snack": "Snack"
+      }
+    }
+  },
+  "issues": {
+    "realtime_unavailable": {
+      "title": "Norish realtime updates are not available",
+      "description": "Home Assistant could not open Norish's WebSocket at {url}, so changes only arrive with the regular updates. If Norish runs behind a reverse proxy, make sure it forwards WebSocket upgrades on /trpc (for nginx: proxy_http_version 1.1 and the Upgrade/Connection headers). This message disappears as soon as the connection works."
+    }
   }
 }
