@@ -35,6 +35,7 @@ from .const import (
     ERROR_CANNOT_CONNECT,
     ERROR_INVALID_AUTH,
     ERROR_UNKNOWN,
+    MIN_POLL_INTERVAL,
     POLL_INTERVAL_OPTIONS,
 )
 
@@ -235,7 +236,10 @@ class NorishOptionsFlow(config_entries.OptionsFlow):
 
         # Current value (default 15 min) — self.config_entry provided by HA
         current_interval = str(
-            self.config_entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+            max(
+                int(self.config_entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)),
+                MIN_POLL_INTERVAL,
+            )
         )
 
         options_schema = vol.Schema(

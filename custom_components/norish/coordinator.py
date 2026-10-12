@@ -87,7 +87,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL, MIN_POLL_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -149,7 +149,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         norish_password: str = "",
     ) -> None:
         """Initialize the coordinator."""
-        poll_interval: int = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+        poll_interval: int = max(
+            int(entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)),
+            MIN_POLL_INTERVAL,
+        )
         _LOGGER.debug("Norish: poll interval set to %d seconds", poll_interval)
 
         super().__init__(
@@ -181,6 +184,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Unit translations from the Norish server (e.g. "tablespoon" → "el")
         self._cached_units: dict[str, Any] = {}
+
+        # Results of the batched request at the start of each update, keyed by
+        # procedure + payload; _fetch_trpc serves these before going online.
+        self._prefetched: dict[str, list[Any]] = {}
         self._units_last_fetched: datetime | None = None
 
         # Recipe cache: { recipe_id: recipe_dict }
@@ -570,13 +577,44 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("Failed to extract tRPC result: %s", err)
             return default
 
+    @staticmethod
+    def _prefetch_key(procedure: str, payload: Any) -> str:
+        return f"{procedure}:{json.dumps(payload, sort_keys=True)}"
+
+    async def _prefetch_trpc(self, calls: list[tuple[str, Any]]) -> None:
+        """Fetch several procedures in one HTTP request.
+
+        Norish counts API-key usage per HTTP request, so one batched request
+        per update halves the usage. Results are served by _fetch_trpc; a
+        procedure that failed in the batch is simply fetched on its own.
+        """
+        self._prefetched = {}
+        procedures = ",".join(procedure for procedure, _ in calls)
+        batch_input = {
+            str(index): {"json": payload} for index, (_, payload) in enumerate(calls)
+        }
+        result = await self._fetch_trpc(procedures, batch_input=batch_input)
+        if not isinstance(result, list) or len(result) != len(calls):
+            return
+        for (procedure, payload), item in zip(calls, result):
+            if isinstance(item, dict) and "error" not in item:
+                self._prefetched[self._prefetch_key(procedure, payload)] = [item]
+
     async def _fetch_trpc(
         self,
         procedure: str,
         payload: dict[str, Any] | None = None,
+        *,
+        batch_input: dict[str, Any] | None = None,
     ) -> list[Any] | None:
         """Fetch data from a tRPC endpoint with retry."""
-        trpc_input = {"0": {"json": payload if payload is not None else None}}
+        if batch_input is None:
+            cached = self._prefetched.pop(self._prefetch_key(procedure, payload), None)
+            if cached is not None:
+                return cached
+        trpc_input = batch_input or {
+            "0": {"json": payload if payload is not None else None}
+        }
         encoded = urllib.parse.quote(
             json.dumps(trpc_input, separators=(",", ":"))
         )
@@ -640,7 +678,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         return None
 
-                    if resp.status != 200:
+                    if resp.status not in (200, 207):
                         text = await resp.text()
                         _LOGGER.error(
                             "Norish: unexpected status %s for %s: %s",
@@ -842,6 +880,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
         try:
+            # One HTTP request (one API-key hit) for both core lists
+            await self._prefetch_trpc(
+                [("calendar.listItems", self._calendar_payload()), ("groceries.list", None)]
+            )
             await self._fetch_calendar(data)
             await self._fetch_groceries(data)
             await self._fetch_stores_cached(data)
@@ -912,19 +954,24 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Data fetch methods
     # ------------------------------------------------------------------
 
-    async def _fetch_calendar(self, data: dict[str, Any]) -> None:
-        """Fetch calendar entries."""
+    @staticmethod
+    def _calendar_payload() -> dict[str, str]:
+        """Date range for calendar.listItems (yesterday … two weeks ahead)."""
         # Use HA's local date, not the host's (containers often run in UTC)
         today = dt_util.now().date()
-        start_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
-        end_date = (today + timedelta(days=14)).strftime("%Y-%m-%d")
+        return {
+            "startISO": (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "endISO": (today + timedelta(days=14)).strftime("%Y-%m-%d"),
+        }
 
-        _LOGGER.debug("Norish: fetching calendar %s → %s", start_date, end_date)
-
-        c_data = await self._fetch_trpc(
-            "calendar.listItems",
-            {"startISO": start_date, "endISO": end_date},
+    async def _fetch_calendar(self, data: dict[str, Any]) -> None:
+        """Fetch calendar entries."""
+        payload = self._calendar_payload()
+        _LOGGER.debug(
+            "Norish: fetching calendar %s → %s", payload["startISO"], payload["endISO"]
         )
+
+        c_data = await self._fetch_trpc("calendar.listItems", payload)
         if c_data:
             items = self._safe_get_trpc_result(c_data, [])
             if isinstance(items, list):
