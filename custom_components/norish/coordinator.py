@@ -89,6 +89,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL, MIN_POLL_INTERVAL
 from .realtime import REALTIME_POLL_INTERVAL
+from .services import ingredients_for_groceries
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -882,6 +883,76 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("Norish: failed to add grocery %r", name)
             return False
         _LOGGER.debug("Norish: added grocery %r (store %s)", name, store_id)
+        await self.async_request_refresh()
+        return True
+
+    async def async_add_recipe_ingredients(self, recipe_id: str) -> tuple[int, str]:
+        """Put a recipe's ingredients on the shopping list.
+
+        Returns (number of items sent, recipe name); (0, "") on failure.
+        """
+        recipe = self._cached_recipes.get(recipe_id) or await self._fetch_recipe_details(
+            recipe_id
+        )
+        if not recipe:
+            _LOGGER.error("Norish: recipe %s not found", recipe_id)
+            return 0, ""
+        payload = ingredients_for_groceries(recipe)
+        if not payload:
+            _LOGGER.warning("Norish: recipe %s has no ingredients", recipe_id)
+            return 0, ""
+        if await self._post_trpc("groceries.create", payload) is None:
+            _LOGGER.error("Norish: failed to add ingredients of %s", recipe_id)
+            return 0, ""
+        await self.async_request_refresh()
+        return len(payload), str(recipe.get("name") or "")
+
+    async def async_find_recipe(self, title: str) -> dict[str, Any] | None:
+        """Return the recipe whose title matches exactly (case-insensitive)."""
+        result = await self._fetch_trpc(
+            "recipes.list",
+            {"search": title, "searchFields": ["title"], "limit": 10},
+        )
+        data = self._safe_get_trpc_result(result, {}) if result else {}
+        wanted = title.strip().casefold()
+        for recipe in (data or {}).get("recipes", []) if isinstance(data, dict) else []:
+            if isinstance(recipe, dict) and str(recipe.get("name", "")).strip().casefold() == wanted:
+                return recipe
+        return None
+
+    async def async_create_calendar_item(
+        self, day: date, slot: str, title: str
+    ) -> bool:
+        """Plan a recipe (exact title match) or otherwise a note in Norish."""
+        recipe = await self.async_find_recipe(title)
+        item: dict[str, Any] = {"date": day.isoformat(), "slot": slot}
+        if recipe and recipe.get("id"):
+            item.update(itemType="recipe", recipeId=recipe["id"])
+        else:
+            item.update(itemType="note", title=title)
+        if await self._post_trpc("calendar.createItem", item) is None:
+            _LOGGER.error("Norish: failed to plan %r on %s (%s)", title, day, slot)
+            return False
+        await self.async_request_refresh()
+        return True
+
+    async def async_delete_calendar_item(self, item_id: str) -> bool:
+        """Remove a planned item from the Norish calendar."""
+        item = next(
+            (
+                i for i in (self.data or {}).get("calendar", [])
+                if isinstance(i, dict) and i.get("id") == item_id
+            ),
+            None,
+        )
+        version = (item or {}).get("version")
+        if not isinstance(version, int):
+            _LOGGER.error("Norish: calendar item %s not found", item_id)
+            return False
+        payload = {"itemId": item_id, "version": version}
+        if await self._post_trpc("calendar.deleteItem", payload) is None:
+            _LOGGER.error("Norish: failed to delete calendar item %s", item_id)
+            return False
         await self.async_request_refresh()
         return True
 

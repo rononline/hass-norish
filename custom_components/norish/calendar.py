@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+import re
+from datetime import date, datetime, timedelta
+from typing import Any
 
-from homeassistant.components.calendar import CalendarEntity, CalendarEvent
+from homeassistant.components.calendar import (
+    CalendarEntity,
+    CalendarEntityFeature,
+    CalendarEvent,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
@@ -50,6 +57,9 @@ class NorishCalendar(CoordinatorEntity, CalendarEntity):
         self._attr_device_info = norish_device_info(entry, coordinator.base_url)
         self._attr_name = "Norish Meal Calendar"
         self._attr_unique_id = f"{entry.entry_id}_calendar"
+        self._attr_supported_features = (
+            CalendarEntityFeature.CREATE_EVENT | CalendarEntityFeature.DELETE_EVENT
+        )
 
     @property
     def event(self) -> CalendarEvent | None:
@@ -57,6 +67,33 @@ class NorishCalendar(CoordinatorEntity, CalendarEntity):
         now = dt_util.now()
         events = self._get_events_for_range(now, now + timedelta(days=1))
         return next((e for e in events if e.end > now), None)
+
+    async def async_create_event(self, **kwargs: Any) -> None:
+        """Plan a meal in Norish: a recipe when the title matches one exactly,
+        otherwise a note ("Eating out"). The slot comes from a "Dinner: …"
+        prefix, else from the start time (date-only events become dinner)."""
+        summary = str(kwargs.get("summary") or "").strip()
+        start = kwargs.get("dtstart")
+        slot, title = _split_slot(summary)
+        if slot is None:
+            slot = _slot_for_time(start) if isinstance(start, datetime) else "Dinner"
+        if not title:
+            raise HomeAssistantError("A meal needs a title")
+        day = start.date() if isinstance(start, datetime) else start
+        if not isinstance(day, date):
+            raise HomeAssistantError("A meal needs a date")
+        if not await self.coordinator.async_create_calendar_item(day, slot, title):
+            raise HomeAssistantError("Could not plan the meal in Norish")
+
+    async def async_delete_event(
+        self,
+        uid: str,
+        recurrence_id: str | None = None,
+        recurrence_range: str | None = None,
+    ) -> None:
+        """Remove a planned meal or note from Norish."""
+        if not await self.coordinator.async_delete_calendar_item(uid):
+            raise HomeAssistantError("Could not remove the meal from Norish")
 
     async def async_get_events(
         self,
@@ -147,6 +184,7 @@ class NorishCalendar(CoordinatorEntity, CalendarEntity):
                         end=end_dt,
                         summary=summary,
                         description=description,
+                        uid=item.get("id"),
                     )
                 )
 
@@ -155,3 +193,30 @@ class NorishCalendar(CoordinatorEntity, CalendarEntity):
                 continue
 
         return sorted(events, key=lambda x: x.start)
+
+
+# "Diner: Pasta" / "Dinner - Pasta" → ("Dinner", "Pasta"), in NL/EN/DE
+_SLOT_WORDS = {
+    "breakfast": "Breakfast", "ontbijt": "Breakfast", "frühstück": "Breakfast",
+    "lunch": "Lunch", "mittagessen": "Lunch",
+    "dinner": "Dinner", "diner": "Dinner", "avondeten": "Dinner", "abendessen": "Dinner",
+    "snack": "Snack", "tussendoortje": "Snack",
+}
+
+
+def _split_slot(summary: str) -> tuple[str | None, str]:
+    match = re.match(r"^\s*([^\W\d_]+)\s*[:\-–]\s*(.+)$", summary)
+    if match and match.group(1).casefold() in _SLOT_WORDS:
+        return _SLOT_WORDS[match.group(1).casefold()], match.group(2).strip()
+    return None, summary
+
+
+def _slot_for_time(start: datetime) -> str:
+    hour = dt_util.as_local(start).hour if start.tzinfo else start.hour
+    if hour < 11:
+        return "Breakfast"
+    if hour < 15:
+        return "Lunch"
+    if hour < 17:
+        return "Snack"
+    return "Dinner"
