@@ -16,7 +16,7 @@ import contextlib
 import json
 import logging
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
@@ -42,6 +42,9 @@ SUBSCRIPTIONS: tuple[str, ...] = (
     "stores.onUpdated",
     "stores.onDeleted",
 )
+
+# Fired on the HA event bus for every change Norish pushes
+EVENT_NORISH_CHANGE = "norish_change"
 
 # Poll interval while the WebSocket is connected (safety net only)
 REALTIME_POLL_INTERVAL = timedelta(minutes=30)
@@ -170,6 +173,13 @@ class NorishRealtime:
             _LOGGER.debug("Norish realtime: socket closed (code %s)", ws.close_code)
             return ws.close_code
 
+    def _fire_event(self, sub_id: Any, envelope: Any) -> None:
+        """Fire norish_change on the HA event bus for automations."""
+        if not isinstance(sub_id, int) or not 1 <= sub_id <= len(SUBSCRIPTIONS):
+            return
+        data = event_data(SUBSCRIPTIONS[sub_id - 1], envelope)
+        self._hass.bus.async_fire(EVENT_NORISH_CHANGE, data)
+
     async def _handle(self, raw: str, subscribed: bool) -> bool:
         """Handle one tRPC message; return whether subscriptions are live."""
         try:
@@ -220,6 +230,38 @@ class NorishRealtime:
             if isinstance(payload, dict) and payload.get("mark") == "cursor":
                 return subscribed
             _LOGGER.debug("Norish realtime: change on subscription %s", message.get("id"))
+            self._fire_event(message.get("id"), payload)
             await self._coordinator.async_request_refresh()
         return subscribed
 
+
+
+def event_data(path: str, envelope: Any) -> dict[str, Any]:
+    """Compact event data: kind plus the fields automations need.
+
+    "groceries.onCreated" → kind "groceries.created" with the item names;
+    calendar events carry date, slot and title of the item.
+    """
+    domain, _, name = path.partition(".")
+    event = name[2:] if name.startswith("on") else name
+    snake = "".join(f"_{c.lower()}" if c.isupper() else c for c in event).lstrip("_")
+    data: dict[str, Any] = {"kind": f"{domain}.{snake}"}
+    payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict):
+        return data
+
+    if domain == "groceries":
+        groceries = payload.get("groceries")
+        if isinstance(groceries, list):
+            data["names"] = [
+                g.get("name") for g in groceries if isinstance(g, dict) and g.get("name")
+            ]
+    elif domain == "calendar":
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else payload
+        for key in ("date", "slot"):
+            if item.get(key):
+                data[key] = item[key]
+        title = item.get("recipeName") or item.get("title")
+        if title:
+            data["title"] = title
+    return data

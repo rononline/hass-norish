@@ -56,7 +56,9 @@ def test_full_flow():
         async with aiohttp.ClientSession() as session:
             with patch.object(rt, "async_get_clientsession", return_value=session), \
                  patch.object(rt, "RECONNECT_MIN", 0.05):
-                client = rt.NorishRealtime(SimpleNamespace(), coord)
+                fired = []
+                hass = SimpleNamespace(bus=SimpleNamespace(async_fire=lambda t, d: fired.append((t, d))))
+                client = rt.NorishRealtime(hass, coord)
                 task = asyncio.create_task(client._run())
                 assert await wait_for(lambda: len(mock.subscriptions) == len(rt.SUBSCRIPTIONS))
                 assert mock.subscriptions == list(rt.SUBSCRIPTIONS)
@@ -66,8 +68,9 @@ def test_full_flow():
                 # a real change on groceries.onUpdated
                 sub_id = rt.SUBSCRIPTIONS.index("groceries.onUpdated") + 1
                 await mock.sockets[0].send_str(json.dumps({"id": sub_id, "result": {"type": "data", "id": "e1",
-                    "data": {"json": {"meta": {"channel": "x"}, "payload": {"id": "g"}}}}}))
+                    "data": {"json": {"meta": {"channel": "x"}, "payload": {"groceries": [{"name": "melk"}]}}}}}))
                 assert await wait_for(lambda: coord.async_request_refresh.await_count == 2)
+                assert fired == [("norish_change", {"kind": "groceries.updated", "names": ["melk"]})]
                 # unknown subscription error is skipped, socket stays
                 await mock.sockets[0].send_str(json.dumps({"id": 3, "error": {"message": "No procedure found"}}))
                 await asyncio.sleep(0.1); assert mock.connections == 1
@@ -143,3 +146,17 @@ def test_flapping_connection_backs_off():
                 await client._run()
         assert sleeps[:4] == [10, 20, 40, 80] and sleeps[-1] == rt.RECONNECT_MAX
     asyncio.run(go())
+
+
+@pytest.mark.parametrize("path,envelope,expected", [
+    ("groceries.onCreated", {"payload": {"groceries": [{"name": "melk"}, {"name": "brood"}]}},
+     {"kind": "groceries.created", "names": ["melk", "brood"]}),
+    ("calendar.onItemCreated", {"payload": {"item": {"date": "2026-10-12", "slot": "Dinner", "recipeName": "Wraps"}}},
+     {"kind": "calendar.item_created", "date": "2026-10-12", "slot": "Dinner", "title": "Wraps"}),
+    ("calendar.onItemDeleted", {"payload": {"itemId": "i1", "date": "2026-10-12", "slot": "Lunch"}},
+     {"kind": "calendar.item_deleted", "date": "2026-10-12", "slot": "Lunch"}),
+    ("stores.onUpdated", {"payload": {"x": 1}}, {"kind": "stores.updated"}),
+    ("groceries.onDeleted", None, {"kind": "groceries.deleted"}),
+])
+def test_event_data(path, envelope, expected):
+    assert rt.event_data(path, envelope) == expected
