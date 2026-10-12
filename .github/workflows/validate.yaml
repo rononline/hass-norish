@@ -22,6 +22,8 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+          # Only needed for the HACS default list, not for a custom repository
+          ignore: issues topics
 
   validate-hassfest:
     name: Validate with hassfest

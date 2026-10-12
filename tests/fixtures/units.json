@@ -1,0 +1,188 @@
+{
+  "gram": {
+    "short": [
+      {
+        "locale": "en",
+        "name": "g"
+      },
+      {
+        "locale": "nl",
+        "name": "gr"
+      },
+      {
+        "locale": "de",
+        "name": "g"
+      }
+    ],
+    "plural": [
+      {
+        "locale": "en",
+        "name": "grams"
+      },
+      {
+        "locale": "nl",
+        "name": "gram"
+      },
+      {
+        "locale": "de",
+        "name": "g"
+      }
+    ],
+    "alternates": []
+  },
+  "tablespoon": {
+    "short": [
+      {
+        "locale": "en",
+        "name": "tbsp"
+      },
+      {
+        "locale": "nl",
+        "name": "el"
+      },
+      {
+        "locale": "de",
+        "name": "EL"
+      }
+    ],
+    "plural": [
+      {
+        "locale": "en",
+        "name": "tbsp"
+      },
+      {
+        "locale": "nl",
+        "name": "eetlepels"
+      },
+      {
+        "locale": "de",
+        "name": "EL"
+      }
+    ],
+    "alternates": []
+  },
+  "teaspoon": {
+    "short": [
+      {
+        "locale": "en",
+        "name": "tsp"
+      },
+      {
+        "locale": "nl",
+        "name": "tl"
+      },
+      {
+        "locale": "de",
+        "name": "TL"
+      }
+    ],
+    "plural": [
+      {
+        "locale": "en",
+        "name": "tsp"
+      },
+      {
+        "locale": "nl",
+        "name": "theelepels"
+      },
+      {
+        "locale": "de",
+        "name": "TL"
+      }
+    ],
+    "alternates": []
+  },
+  "piece": {
+    "short": [
+      {
+        "locale": "en",
+        "name": "piece"
+      },
+      {
+        "locale": "nl",
+        "name": "stuk"
+      },
+      {
+        "locale": "de",
+        "name": "Stk."
+      }
+    ],
+    "plural": [
+      {
+        "locale": "en",
+        "name": "pieces"
+      },
+      {
+        "locale": "nl",
+        "name": "stuks"
+      },
+      {
+        "locale": "de",
+        "name": "Stk."
+      }
+    ],
+    "alternates": []
+  },
+  "chunk": {
+    "short": [
+      {
+        "locale": "en",
+        "name": "chunk"
+      },
+      {
+        "locale": "nl",
+        "name": "stuk"
+      },
+      {
+        "locale": "de",
+        "name": "Stück"
+      }
+    ],
+    "plural": [
+      {
+        "locale": "en",
+        "name": "chunks"
+      },
+      {
+        "locale": "nl",
+        "name": "stukken"
+      },
+      {
+        "locale": "de",
+        "name": "Stücke"
+      }
+    ],
+    "alternates": []
+  },
+  "bunch": {
+    "short": [
+      {
+        "locale": "en",
+        "name": "bunch"
+      },
+      {
+        "locale": "nl",
+        "name": "bos"
+      },
+      {
+        "locale": "de",
+        "name": "Bund"
+      }
+    ],
+    "plural": [
+      {
+        "locale": "en",
+        "name": "bunches"
+      },
+      {
+        "locale": "nl",
+        "name": "bossen"
+      },
+      {
+        "locale": "de",
+        "name": "Bund"
+      }
+    ],
+    "alternates": []
+  }
+}
