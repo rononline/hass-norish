@@ -32,3 +32,16 @@ add_recipe_to_groceries:
           min: 1
           max: 14
           mode: box
+
+import_recipe:
+  fields:
+    url:
+      required: true
+      example: "https://www.ah.nl/allerhande/recept/R-R1199361/pulled-chicken-wraps"
+      selector:
+        text:
+          type: url
+    force_ai:
+      default: false
+      selector:
+        boolean:

@@ -83,6 +83,20 @@
           "description": "Number of days starting at the date, e.g. 7 for the whole week."
         }
       }
+    },
+    "import_recipe": {
+      "name": "Import recipe",
+      "description": "Import a recipe from a web page into Norish. Norish imports it in the background; a norish_change event with kind recipes.imported or recipes.failed follows.",
+      "fields": {
+        "url": {
+          "name": "URL",
+          "description": "Web page with the recipe."
+        },
+        "force_ai": {
+          "name": "Use AI",
+          "description": "Let Norish's AI read the page, also when the page has structured recipe data."
+        }
+      }
     }
   },
   "selector": {

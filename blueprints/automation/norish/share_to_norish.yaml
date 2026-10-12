@@ -1,0 +1,104 @@
+blueprint:
+  name: Norish – import a shared recipe
+  description: >-
+    Share a recipe web page from your phone to the Home Assistant app
+    (share menu → Home Assistant) and it is imported into Norish. Optional
+    actions run when the import is done or failed – for example a
+    notification. Variables: {{ recipe_title }}, {{ recipe_url }} (link to
+    the recipe in Norish), {{ failure_reason }}.
+  domain: automation
+  source_url: https://github.com/rononline/hass-norish/blob/main/blueprints/automation/norish/share_to_norish.yaml
+  input:
+    norish_url:
+      name: Norish URL
+      description: Used for the {{ recipe_url }} link, e.g. https://norish.example.com
+      default: ""
+      selector:
+        text:
+          type: url
+    done_actions:
+      name: When imported
+      default: []
+      selector:
+        action: {}
+    failed_actions:
+      name: When the import failed
+      default: []
+      selector:
+        action: {}
+
+triggers:
+  - trigger: event
+    event_type: mobile_app.share
+
+variables:
+  norish_url: !input norish_url
+  # Android sends the link in "url"; otherwise take the first link in the text
+  shared: >-
+    {% set data = trigger.event.data %}
+    {% set found = (data.get('url') or '') ~ ' ' ~ (data.get('text') or '') ~ ' ' ~ (data.get('entered') or '') %}
+    {{ (found | regex_findall('https?://\\S+') | first) if found | regex_search('https?://') else '' }}
+
+conditions:
+  - condition: template
+    value_template: "{{ shared != '' }}"
+
+actions:
+  - action: norish.import_recipe
+    data:
+      url: "{{ shared }}"
+    response_variable: started
+    continue_on_error: true
+  - if:
+      - condition: template
+        value_template: "{{ started is not defined or not started or not started.recipe_id }}"
+    then:
+      - variables:
+          failure_reason: "Norish did not accept {{ shared }}"
+          recipe_title: ""
+          recipe_url: ""
+      - sequence: !input failed_actions
+      - stop: Import refused
+  - if:
+      - condition: template
+        value_template: "{{ started.status == 'exists' }}"
+    then:
+      # Already in Norish: nothing to wait for
+      - variables:
+          recipe_title: ""
+          recipe_url: >-
+            {{ (norish_url | regex_replace('/+$', '')) ~ '/recipes/' ~ started.recipe_id if norish_url else '' }}
+          failure_reason: ""
+      - sequence: !input done_actions
+      - stop: Recipe already in Norish
+  # Norish imports in the background and reports back over realtime
+  - wait_for_trigger:
+      - trigger: event
+        event_type: norish_change
+        event_data:
+          kind: recipes.imported
+      - trigger: event
+        event_type: norish_change
+        event_data:
+          kind: recipes.failed
+    timeout:
+      minutes: 10
+    continue_on_timeout: true
+  - variables:
+      event: "{{ wait.trigger.event.data if wait.trigger else {} }}"
+      imported: "{{ event.get('kind') == 'recipes.imported' }}"
+      recipe_id: "{{ event.get('recipe_id') or started.recipe_id }}"
+      recipe_title: "{{ event.get('title', '') }}"
+      recipe_url: >-
+        {{ (norish_url | regex_replace('/+$', '')) ~ '/recipes/' ~ recipe_id if norish_url else '' }}
+      failure_reason: >-
+        {{ event.get('reason') or ('' if imported else 'No answer from Norish within 10 minutes') }}
+  - if:
+      - condition: template
+        value_template: "{{ imported }}"
+    then:
+      - sequence: !input done_actions
+    else:
+      - sequence: !input failed_actions
+
+mode: queued

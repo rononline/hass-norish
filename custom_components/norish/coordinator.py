@@ -82,7 +82,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -926,6 +926,48 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if isinstance(recipe, dict) and str(recipe.get("name", "")).strip().casefold() == wanted:
                 return recipe
         return None
+
+    async def async_import_recipe(
+        self, url: str, force_ai: bool = False
+    ) -> dict[str, Any]:
+        """Queue a recipe import from a URL in Norish.
+
+        Returns {"recipe_id", "status"} with status "queued" (Norish imports
+        it in the background) or "exists" (already in Norish). Raises
+        HomeAssistantError with Norish's own message when it refuses.
+        """
+        payload: dict[str, Any] = {"url": url}
+        if force_ai:
+            payload["forceAI"] = True
+        session = async_get_clientsession(self.hass)
+        try:
+            async with session.post(
+                f"{self.base_url}/api/trpc/recipes.importFromUrl?batch=1",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                data=json.dumps({"0": {"json": payload}}),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                try:
+                    body = await resp.json(content_type=None)
+                except ValueError:
+                    body = None
+                status = resp.status
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise HomeAssistantError(f"Norish is not reachable: {err}") from err
+
+        entry = body[0] if isinstance(body, list) and body else body
+        if isinstance(entry, dict) and "error" in entry:
+            error = entry["error"].get("json", entry["error"])
+            message = error.get("message") if isinstance(error, dict) else None
+            _LOGGER.warning("Norish: import of %s refused: %s", url, message)
+            raise HomeAssistantError(message or f"Norish refused the import ({status})")
+        result = self._safe_get_trpc_result(body, {}) if status in (200, 207) else None
+        if not isinstance(result, dict) or not result.get("recipeId"):
+            raise HomeAssistantError(f"Norish did not accept the import ({status})")
+        return {
+            "recipe_id": result["recipeId"],
+            "status": result.get("status") or "queued",
+        }
 
     async def async_search_recipe(self, query: str) -> dict[str, Any] | None:
         """Best recipe for a spoken or typed name.

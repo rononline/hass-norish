@@ -83,6 +83,20 @@
           "description": "Aantal dagen vanaf de datum, bijvoorbeeld 7 voor de hele week."
         }
       }
+    },
+    "import_recipe": {
+      "name": "Recept importeren",
+      "description": "Importeer een recept van een webpagina in Norish. Norish importeert het op de achtergrond; daarna volgt een norish_change-event met kind recipes.imported of recipes.failed.",
+      "fields": {
+        "url": {
+          "name": "URL",
+          "description": "Webpagina met het recept."
+        },
+        "force_ai": {
+          "name": "AI gebruiken",
+          "description": "Laat de AI van Norish de pagina lezen, ook als de pagina gestructureerde receptgegevens heeft."
+        }
+      }
     }
   },
   "selector": {

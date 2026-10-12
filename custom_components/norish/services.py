@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_ADD_RECIPE_TO_GROCERIES = "add_recipe_to_groceries"
+SERVICE_IMPORT_RECIPE = "import_recipe"
 
 SLOTS = {"breakfast": "Breakfast", "lunch": "Lunch", "dinner": "Dinner", "snack": "Snack"}
 
@@ -36,6 +37,14 @@ ADD_RECIPE_SCHEMA = vol.Schema(
         vol.Optional("date"): cv.date,
         vol.Optional("slot"): vol.In(list(SLOTS)),
         vol.Optional("days"): vol.All(vol.Coerce(int), vol.Range(min=1, max=14)),
+    }
+)
+
+
+IMPORT_RECIPE_SCHEMA = vol.Schema(
+    {
+        vol.Required("url"): vol.All(cv.string, vol.Match(r"^https?://", msg="url must start with http(s)://")),
+        vol.Optional("force_ai", default=False): cv.boolean,
     }
 )
 
@@ -96,6 +105,15 @@ async def _add_recipe_to_groceries(call: ServiceCall) -> ServiceResponse:
     return {"added": added, "recipes": names}
 
 
+async def _import_recipe(call: ServiceCall) -> ServiceResponse:
+    coordinators = _coordinators(call.hass)
+    if not coordinators:
+        raise ServiceValidationError("Norish is not set up")
+    return await coordinators[0].async_import_recipe(
+        call.data["url"].strip(), call.data.get("force_ai", False)
+    )
+
+
 def async_register_services(hass: HomeAssistant) -> None:
     """Register the integration's actions (once)."""
     if hass.services.has_service(DOMAIN, SERVICE_ADD_RECIPE_TO_GROCERIES):
@@ -107,12 +125,20 @@ def async_register_services(hass: HomeAssistant) -> None:
         schema=ADD_RECIPE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IMPORT_RECIPE,
+        _import_recipe,
+        schema=IMPORT_RECIPE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
 
 def async_unregister_services(hass: HomeAssistant) -> None:
     """Remove the actions when the last Norish entry is unloaded."""
     if not hass.data.get(DOMAIN):
         hass.services.async_remove(DOMAIN, SERVICE_ADD_RECIPE_TO_GROCERIES)
+        hass.services.async_remove(DOMAIN, SERVICE_IMPORT_RECIPE)
 
 
 def _scaled(amount: Any, factor: float) -> Any:

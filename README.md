@@ -83,6 +83,16 @@ are inputs, so any language works.
 in Norish by name and puts its ingredients on the list. "Zet melk op de
 boodschappenlijst" still adds just milk.
 
+### 📲 Import a recipe from your phone
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frononline%2Fhass-norish%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnorish%2Fshare_to_norish.yaml)
+
+Share a recipe page from your browser to the Home Assistant app (share menu →
+Home Assistant) and it is imported into Norish. Optional actions run when the
+import is done or failed, e.g. a notification with a link to the recipe.
+
+On a computer, the [Norish Quick Import](https://github.com/rononline/Norish-Quick-Import-Extension)
+browser extension imports the page you are on.
+
 ### ⏰ Reminder when nothing is planned
 [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Frononline%2Fhass-norish%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fnorish%2Fmeal_reminder.yaml)
 
@@ -98,6 +108,8 @@ Every change Norish pushes fires a `norish_change` event:
 | `groceries.created` / `groceries.updated` / `groceries.deleted` | `names` |
 | `calendar.item_created` / `item_updated` / `item_moved` / `item_deleted` | `date`, `slot`, `title` |
 | `stores.created` / `stores.updated` / `stores.deleted` | — |
+| `recipes.imported` | `recipe_id`, `title`, `import_id` |
+| `recipes.failed` | `reason`, `url`, `import_id` |
 
 ```yaml
 triggers:
@@ -203,6 +215,17 @@ action: norish.add_recipe_to_groceries
 data:
   recipe: Lasagne
   servings: 6
+```
+
+`norish.import_recipe` imports a recipe from a web page (`url`, optionally
+`force_ai`). It answers with the `recipe_id` and `status` (`queued`, or `exists`
+when Norish already has it); a `norish_change` event with kind
+`recipes.imported` or `recipes.failed` follows when Norish is done.
+
+```yaml
+action: norish.import_recipe
+data:
+  url: https://www.ah.nl/allerhande/recept/R-R1199361/pulled-chicken-wraps
 ```
 
 ### Updating your API Key
@@ -447,14 +470,14 @@ logger:
 
 ---
 
-## 🆕 What's New in v1.10.0
+## 🆕 What's New in v1.11.0
 
-- **Servings** in the card: − / + recalculates ingredient amounts
-- **Tomorrow in the evening**: `tomorrow_after` shows tomorrow's meals from a set time
-- **Blueprints**: a recipe on the shopping list by voice, and a reminder when nothing is planned
-- `norish.add_recipe_to_groceries` accepts a recipe **name** and **servings**
+- **Import recipes** from a URL with `norish.import_recipe`
+- **Blueprint**: share a recipe page from your phone to Home Assistant and it lands in Norish
+- `norish_change` events for finished (`recipes.imported`) and failed imports
 
-Earlier: cook mode, shopping list view, planning from Home Assistant and
+Earlier: servings and `tomorrow_after` in the card, voice and reminder
+blueprints (1.10), cook mode, shopping list view, planning from Home Assistant and
 `norish_change` events (1.9.0), realtime updates (1.8.0).
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
