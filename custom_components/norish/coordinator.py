@@ -215,6 +215,8 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # because the latest updates failed – exposed to the dashboard card.
         self.last_success: datetime | None = None
         self.stale: bool = False
+        # Whether Norish pushes changes over the WebSocket right now
+        self.realtime_connected: bool = False
 
     @property
     def api_key(self) -> str:
@@ -223,6 +225,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def set_realtime(self, connected: bool) -> None:
         """Slow polling down while Norish pushes changes over the WebSocket."""
+        self.realtime_connected = connected
         if connected:
             self._normal_update_interval = max(
                 self._configured_update_interval, REALTIME_POLL_INTERVAL
@@ -231,6 +234,8 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._normal_update_interval = self._configured_update_interval
         if self._consecutive_failures == 0 and self._rate_limited_until is None:
             self.update_interval = self._normal_update_interval
+        # Let the realtime status entity follow along
+        self.async_update_listeners()
 
     def seconds_until_requests_allowed(self) -> float:
         """0 when requests may be made, else seconds until they may again.

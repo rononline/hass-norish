@@ -21,7 +21,9 @@ from .realtime import NorishRealtime
 from .services import async_register_services, async_unregister_services
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS: list[str] = ["sensor", "todo", "calendar", "camera", "media_player"]
+PLATFORMS: list[str] = [
+    "sensor", "binary_sensor", "todo", "calendar", "camera", "media_player"
+]
 
 
 async def _validate_api_key(hass: HomeAssistant, base_url: str, api_key: str) -> None:

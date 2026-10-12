@@ -21,8 +21,11 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
+
+from .const import DOMAIN
 
 if TYPE_CHECKING:
     from .coordinator import NorishCoordinator
@@ -54,6 +57,11 @@ WS_CLOSE_UNAUTHORIZED = 4401
 # Error message ending a subscription that fell behind (refetch + resubscribe)
 REALTIME_LAGGED = "REALTIME_LAGGED"
 
+# After this many failed connection attempts in a row, raise a repair issue
+# (usually the reverse proxy does not forward WebSocket upgrades on /trpc)
+REPAIR_AFTER_FAILURES = 5
+ISSUE_REALTIME = "realtime_unavailable"
+
 RECONNECT_MIN = 10  # seconds
 RECONNECT_MAX = 900
 # A connection that stayed up this long counts as healthy (resets backoff).
@@ -71,6 +79,9 @@ class NorishRealtime:
         self._task: asyncio.Task | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self.connected = False
+        self._failed_attempts = 0
+        self._issue_raised = False
+        self._started = False
 
     def start(self) -> None:
         """Start the background connection loop."""
@@ -118,6 +129,7 @@ class NorishRealtime:
 
             started = dt_util.utcnow()
             close_code: int | None = None
+            self._started = False
             try:
                 close_code = await self._connect_once()
             except asyncio.CancelledError:
@@ -129,6 +141,10 @@ class NorishRealtime:
             finally:
                 self._set_connected(False)
 
+            if not self._started:
+                self._failed_attempts += 1
+                if self._failed_attempts == REPAIR_AFTER_FAILURES:
+                    self._raise_issue()
             if dt_util.utcnow() - started > HEALTHY_AFTER:
                 delay = RECONNECT_MIN
             if close_code == WS_CLOSE_UNAUTHORIZED:
@@ -172,6 +188,24 @@ class NorishRealtime:
             self._ws = None
             _LOGGER.debug("Norish realtime: socket closed (code %s)", ws.close_code)
             return ws.close_code
+
+    def _raise_issue(self) -> None:
+        """Explain in Repairs why instant updates are not working."""
+        _LOGGER.warning(
+            "Norish realtime: %d connection attempts failed – falling back to "
+            "polling. Check that the reverse proxy forwards WebSocket upgrades "
+            "on /trpc.", self._failed_attempts,
+        )
+        ir.async_create_issue(
+            self._hass,
+            DOMAIN,
+            ISSUE_REALTIME,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_REALTIME,
+            translation_placeholders={"url": self._ws_url()},
+        )
+        self._issue_raised = True
 
     def _fire_event(self, sub_id: Any, envelope: Any) -> None:
         """Fire norish_change on the HA event bus for automations."""
@@ -218,6 +252,11 @@ class NorishRealtime:
 
         if result.get("type") == "started" and not subscribed:
             _LOGGER.info("Norish realtime: connected – changes arrive instantly")
+            self._started = True
+            self._failed_attempts = 0
+            if self._issue_raised:
+                ir.async_delete_issue(self._hass, DOMAIN, ISSUE_REALTIME)
+                self._issue_raised = False
             self._set_connected(True)
             # Catch up on anything that changed while disconnected
             await self._coordinator.async_request_refresh()

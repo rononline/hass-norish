@@ -141,10 +141,12 @@ def test_flapping_connection_backs_off():
             sleeps.append(s)
             if len(sleeps) >= 8:
                 raise asyncio.CancelledError
-        with patch.object(rt.asyncio, "sleep", fake_sleep):
+        with patch.object(rt.asyncio, "sleep", fake_sleep), patch.object(rt.ir, "async_create_issue") as issue:
             with pytest.raises(asyncio.CancelledError):
                 await client._run()
         assert sleeps[:4] == [10, 20, 40, 80] and sleeps[-1] == rt.RECONNECT_MAX
+        # after 5 failed attempts a repair issue explains the fallback (once)
+        assert issue.call_count == 1 and issue.call_args.args[1:3] == ("norish", "realtime_unavailable")
     asyncio.run(go())
 
 
@@ -160,3 +162,16 @@ def test_flapping_connection_backs_off():
 ])
 def test_event_data(path, envelope, expected):
     assert rt.event_data(path, envelope) == expected
+
+
+def test_issue_cleared_on_connect():
+    async def go():
+        coord = SimpleNamespace(api_key="k", base_url="https://n", set_realtime=lambda c: None,
+                                async_request_refresh=AsyncMock())
+        client = rt.NorishRealtime(SimpleNamespace(), coord)
+        client._issue_raised = True; client._failed_attempts = 7
+        with patch.object(rt.ir, "async_delete_issue") as delete:
+            await client._handle(json.dumps({"id": 1, "result": {"type": "started"}}), False)
+        delete.assert_called_once()
+        assert client._failed_attempts == 0 and not client._issue_raised and client._started
+    asyncio.run(go())
