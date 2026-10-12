@@ -313,7 +313,7 @@ class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
 
     # Large recipe data – keep it out of the recorder database
     _unrecorded_attributes = frozenset(
-        {"week_data", "mo", "tu", "we", "th", "fr", "sa", "su"}
+        {"week_data", "mo", "tu", "we", "th", "fr", "sa", "su", "last_success"}
     )
 
     def __init__(
@@ -361,7 +361,12 @@ class NorishWeekPlannerSensor(CoordinatorEntity, SensorEntity):
             "week_data": week_data,
             "days_planned": sum(1 for day in week_data if day.get("meals")),
             "total_meals": sum(len(day.get("meals", [])) for day in week_data),
+            # True while the shown data is older because updates are failing
+            "stale": getattr(self.coordinator, "stale", False),
         }
+        last_success = getattr(self.coordinator, "last_success", None)
+        if last_success:
+            attributes["last_success"] = last_success.isoformat()
 
         for day_data in week_data:
             day_key = day_data.get("weekday_short", "xx").lower()

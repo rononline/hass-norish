@@ -126,6 +126,10 @@ RECONNECT_BACKOFF_SECONDS: list[int] = [60, 300, 600]
 QUIET_WINDOW_START = time(3, 0)
 QUIET_WINDOW_END = time(4, 5)
 
+# After a failed update the last data stays available for this long, so a
+# Norish restart or Wi-Fi hiccup does not blank dashboards ("unavailable").
+STALE_DATA_GRACE = timedelta(hours=3)
+
 
 class NorishRateLimited(UpdateFailed):
     """The API key hit Norish's request limit; it recovers on its own."""
@@ -195,6 +199,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._normal_update_interval = timedelta(seconds=poll_interval)
         # Set when Norish reports its request limit; no requests until then.
         self._rate_limited_until: datetime | None = None
+        # Last successful update (UTC) and whether the data shown is older
+        # because the latest updates failed – exposed to the dashboard card.
+        self.last_success: datetime | None = None
+        self.stale: bool = False
 
     def _get_headers(self) -> dict[str, str]:
         """Return headers for authenticated API requests."""
@@ -780,6 +788,25 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Core data update
     # ------------------------------------------------------------------
 
+    def _keep_stale_data(self, err: Exception) -> bool:
+        """Return True to keep serving the last data after a failed update.
+
+        Only within STALE_DATA_GRACE of the last success; after that the
+        entities go unavailable as usual so a real outage is visible.
+        """
+        if (
+            self.data is None
+            or self.last_success is None
+            or dt_util.utcnow() - self.last_success > STALE_DATA_GRACE
+        ):
+            return False
+        self.stale = True
+        _LOGGER.warning(
+            "Norish: update failed (%s) – keeping data from %s",
+            err, dt_util.as_local(self.last_success).strftime("%H:%M"),
+        )
+        return True
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch all Norish data.
 
@@ -794,6 +821,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if dt_util.utcnow() < self._rate_limited_until:
                 if self.data is not None:
                     # Keep showing the last data instead of going unavailable
+                    self.stale = True
                     return self.data
                 raise UpdateFailed("Norish request limit reached – waiting")
             self._rate_limited_until = None
@@ -827,19 +855,24 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Temporary: keep the last data, poll again right after the pause
                 remaining = self._rate_limited_until - dt_util.utcnow()
                 self.update_interval = max(remaining, timedelta(seconds=60))
+                self.stale = True
                 return self.data
             self._consecutive_failures += 1
             self._apply_reconnect_backoff()
             raise
-        except UpdateFailed:
+        except UpdateFailed as err:
             # Rate-limit or explicit failure → HA will retry on next interval
             self._consecutive_failures += 1
             self._apply_reconnect_backoff()
+            if self._keep_stale_data(err):
+                return self.data
             raise
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Norish: failed to fetch core data: %s", err)
             self._consecutive_failures += 1
             self._apply_reconnect_backoff()
+            if self._keep_stale_data(err):
+                return self.data
             raise UpdateFailed(f"Error fetching Norish data: {err}") from err
 
         # --- Optional: recipe details + image caching ---
@@ -866,6 +899,8 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._apply_reconnect_backoff()
 
         self._last_successful_update = date.today()
+        self.last_success = dt_util.utcnow()
+        self.stale = False
         _LOGGER.info(
             "Norish: loaded %d calendar events, %d grocery items",
             len(data.get("calendar", [])),
