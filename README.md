@@ -54,7 +54,7 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 - Today's meals as photo tiles, the coming days as a list
 - Tap a meal for the full recipe: times, servings, ingredients and steps
 - **Servings**: − / + recalculates the ingredient amounts (and what
-  "Add to shopping list" puts on the list)
+  "Add to shopping list" puts on the list); the choice is remembered per recipe
 - **Cook mode**: one step at a time in large type, timers for durations in
   a step ("8 tot 10 minuten"), screen stays awake
 - **Shopping list view**: lists per store, tap to check off, add items
@@ -416,7 +416,7 @@ sensor.norish_week_planner:
 
 **No meals shown / "No meals planned"**
 - Check the integration is active (not showing a setup error)
-- Past meals are automatically hidden: Breakfast after 08:30, Lunch after 12:30, Snack after 15:30, Dinner after 18:30
+- Past meals are hidden 6 hours after their slot: Breakfast after 14:00, Lunch after 18:00, Snack after 21:00, Dinner at midnight
 - Future days always show all meals regardless of time
 
 **No images displayed**
