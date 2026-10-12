@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-10-12
+
+### Added
+- ⚡ **Realtime updates** — subscribes to Norish's WebSocket (`/trpc`) and
+  refreshes within seconds of a change in the Norish app; polling drops to a
+  30-minute safety net while connected.
+- 🛒 **Add groceries from Home Assistant** — shopping lists support creating
+  items (also via Assist); "2 milk" becomes 2 × milk, filed under the list's store.
+- 🧩 **Card keeps working offline** — `norish-card` remembers the last week plan
+  (also across a reload) and shows an "Offline · updated HH:MM" badge.
+- 🚀 **Automatic releases** — a release is created whenever the manifest
+  version changes; the upstream sync bumps the patch version and releases too.
+- ✅ **Test suite and CI** — 76 tests, ruff and a card syntax check on every push.
+
+### Changed
+- One HTTP request per update (calendar + groceries batched) — halves API-key usage.
+- Shortest poll interval is now 5 minutes (1 minute always hit Norish's limit);
+  existing 1-minute settings are raised automatically.
+- After a failed update the last data stays available for up to 3 hours
+  instead of entities going unavailable (`stale` / `last_success` attributes).
+- Shopping list entities are keyed by store ID, so renaming a store keeps
+  the entity (existing entities are migrated).
+
+### Fixed
+- Checking off and deleting groceries from HA was rejected by current Norish
+  (it expects `{groceries: [{id, version}]}`); failures now show an error.
+- Reconfigure no longer wipes the stored password when the field is left
+  empty, and keeps the API key when left empty; the same Norish URL cannot be
+  added twice; a timeout reports "cannot connect".
+- Media player shows the recipe title and plays videos from Norish's gallery.
+- hassfest: removed the `aiohttp` requirement (part of Home Assistant).
+
+---
+
 ## [1.7.4] - 2026-10-11
 
 ### Fixed — Norish request limit no longer triggers re-authentication

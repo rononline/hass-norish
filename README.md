@@ -38,9 +38,23 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
 - Full date-range support
 
 ### 🛒 Shopping List
-- Native Home Assistant Todo list entity
+- Native Home Assistant Todo list entity — one per store, plus "Unsorted"
 - Displays items with quantity and unit
-- Create, update, and delete support
+- Add, check off and delete items; also by voice via Assist
+  ("add 2 milk to the shopping list" → 2 × milk, filed under that store)
+
+### ⚡ Realtime Updates
+- Listens to Norish's WebSocket: changes in the Norish app show up in
+  Home Assistant within seconds
+- While connected, polling only runs every 30 minutes as a safety net;
+  without the WebSocket the integration simply polls as before
+
+### 🧩 Dashboard Card
+- `custom:norish-card` ships with the integration — no extra resource needed
+- Today's meals as photo tiles, the coming days as a list
+- Tap a meal for the full recipe: times, servings, ingredients and steps
+- Landscape layout for kitchen displays, light/dark theme, NL/EN/DE
+- Keeps showing the last plan (with an "Offline" badge) during outages
 
 ### 📷 Camera Entities
 - One camera entity per meal type (Breakfast, Lunch, Dinner, Snack)
@@ -99,6 +113,18 @@ A full-featured Home Assistant integration for [Norish](https://github.com/noris
    - **API Key** — find this in your Norish settings under **API Keys**
 5. Click **Submit**
 
+### API key usage
+
+Norish allows 500 requests per API key and only resets that counter after
+the key has been idle for a full hour. The integration therefore:
+
+- fetches calendar and groceries in **one** request per update
+- makes **no requests between 03:00 and 04:05**, so the counter resets nightly
+- recognises Norish's request limit and pauses instead of asking you to
+  re-authenticate; the last data stays visible meanwhile
+
+The shortest poll interval is 5 minutes (Options).
+
 ### Updating your API Key
 
 If your API key expires, Home Assistant will show a **"Reconfigure"** notification automatically. Click it (or use the ⋮ menu on the integration card → **Reconfigure**) to enter a new key — no need to delete and re-add the integration.
@@ -153,6 +179,20 @@ Each sensor includes: meal name (state), `image_url`, `recipe_id`, `meal_count`,
 ---
 
 ## 🎨 Dashboard Examples
+
+### Norish card (recommended)
+
+```yaml
+type: custom:norish-card
+view: full          # full | today | week | recipe
+# slot: dinner      # view: recipe — always show the next dinner
+# layout: auto      # auto | horizontal (landscape screen) | vertical
+# days: 7
+# norish_url: https://norish.yourdomain.com   # "Open in Norish" link
+```
+
+For a kitchen display, put `view: recipe` in a **Panel (single card)** view
+so the card gets the full width (three columns from 900 px).
 
 ### Simple image card
 
