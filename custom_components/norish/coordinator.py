@@ -87,7 +87,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL, MIN_POLL_INTERVAL
+from .realtime import REALTIME_POLL_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -126,6 +127,10 @@ RECONNECT_BACKOFF_SECONDS: list[int] = [60, 300, 600]
 QUIET_WINDOW_START = time(3, 0)
 QUIET_WINDOW_END = time(4, 5)
 
+# After a failed update the last data stays available for this long, so a
+# Norish restart or Wi-Fi hiccup does not blank dashboards ("unavailable").
+STALE_DATA_GRACE = timedelta(hours=3)
+
 
 class NorishRateLimited(UpdateFailed):
     """The API key hit Norish's request limit; it recovers on its own."""
@@ -145,7 +150,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         norish_password: str = "",
     ) -> None:
         """Initialize the coordinator."""
-        poll_interval: int = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+        poll_interval: int = max(
+            int(entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)),
+            MIN_POLL_INTERVAL,
+        )
         _LOGGER.debug("Norish: poll interval set to %d seconds", poll_interval)
 
         super().__init__(
@@ -177,6 +185,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Unit translations from the Norish server (e.g. "tablespoon" → "el")
         self._cached_units: dict[str, Any] = {}
+
+        # Results of the batched request at the start of each update, keyed by
+        # procedure + payload; _fetch_trpc serves these before going online.
+        self._prefetched: dict[str, list[Any]] = {}
         self._units_last_fetched: datetime | None = None
 
         # Recipe cache: { recipe_id: recipe_dict }
@@ -193,8 +205,49 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._consecutive_failures: int = 0
         # Remember the user-configured interval so we can restore it after backoff.
         self._normal_update_interval = timedelta(seconds=poll_interval)
+        # The user's choice; while realtime updates are connected polling only
+        # runs as a slow safety net (see set_realtime).
+        self._configured_update_interval = self._normal_update_interval
         # Set when Norish reports its request limit; no requests until then.
         self._rate_limited_until: datetime | None = None
+        # Last successful update (UTC) and whether the data shown is older
+        # because the latest updates failed – exposed to the dashboard card.
+        self.last_success: datetime | None = None
+        self.stale: bool = False
+
+    @property
+    def api_key(self) -> str:
+        """The API key currently in use (changes after an automatic renewal)."""
+        return self._api_key
+
+    def set_realtime(self, connected: bool) -> None:
+        """Slow polling down while Norish pushes changes over the WebSocket."""
+        if connected:
+            self._normal_update_interval = max(
+                self._configured_update_interval, REALTIME_POLL_INTERVAL
+            )
+        else:
+            self._normal_update_interval = self._configured_update_interval
+        if self._consecutive_failures == 0 and self._rate_limited_until is None:
+            self.update_interval = self._normal_update_interval
+
+    def seconds_until_requests_allowed(self) -> float:
+        """0 when requests may be made, else seconds until they may again.
+
+        Covers a request-limit pause and the nightly quiet window, so the
+        realtime connection does not count against Norish's limit there.
+        """
+        now = dt_util.utcnow()
+        if self._rate_limited_until is not None and now < self._rate_limited_until:
+            return (self._rate_limited_until - now).total_seconds()
+        local = dt_util.now()
+        if QUIET_WINDOW_START <= local.time() < QUIET_WINDOW_END:
+            end = local.replace(
+                hour=QUIET_WINDOW_END.hour, minute=QUIET_WINDOW_END.minute,
+                second=0, microsecond=0,
+            )
+            return max(1.0, (end - local).total_seconds())
+        return 0.0
 
     def _get_headers(self) -> dict[str, str]:
         """Return headers for authenticated API requests."""
@@ -562,13 +615,44 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("Failed to extract tRPC result: %s", err)
             return default
 
+    @staticmethod
+    def _prefetch_key(procedure: str, payload: Any) -> str:
+        return f"{procedure}:{json.dumps(payload, sort_keys=True)}"
+
+    async def _prefetch_trpc(self, calls: list[tuple[str, Any]]) -> None:
+        """Fetch several procedures in one HTTP request.
+
+        Norish counts API-key usage per HTTP request, so one batched request
+        per update halves the usage. Results are served by _fetch_trpc; a
+        procedure that failed in the batch is simply fetched on its own.
+        """
+        self._prefetched = {}
+        procedures = ",".join(procedure for procedure, _ in calls)
+        batch_input = {
+            str(index): {"json": payload} for index, (_, payload) in enumerate(calls)
+        }
+        result = await self._fetch_trpc(procedures, batch_input=batch_input)
+        if not isinstance(result, list) or len(result) != len(calls):
+            return
+        for (procedure, payload), item in zip(calls, result):
+            if isinstance(item, dict) and "error" not in item:
+                self._prefetched[self._prefetch_key(procedure, payload)] = [item]
+
     async def _fetch_trpc(
         self,
         procedure: str,
         payload: dict[str, Any] | None = None,
+        *,
+        batch_input: dict[str, Any] | None = None,
     ) -> list[Any] | None:
         """Fetch data from a tRPC endpoint with retry."""
-        trpc_input = {"0": {"json": payload if payload is not None else None}}
+        if batch_input is None:
+            cached = self._prefetched.pop(self._prefetch_key(procedure, payload), None)
+            if cached is not None:
+                return cached
+        trpc_input = batch_input or {
+            "0": {"json": payload if payload is not None else None}
+        }
         encoded = urllib.parse.quote(
             json.dumps(trpc_input, separators=(",", ":"))
         )
@@ -632,7 +716,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         return None
 
-                    if resp.status != 200:
+                    if resp.status not in (200, 207):
                         text = await resp.text()
                         _LOGGER.error(
                             "Norish: unexpected status %s for %s: %s",
@@ -700,7 +784,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _post_trpc(
         self,
         procedure: str,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | list[Any],
     ) -> list[Any] | None:
         """POST a mutation to a tRPC endpoint."""
         url = f"{self.base_url}/api/trpc/{procedure}?batch=1"
@@ -749,10 +833,61 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Public mutation helpers (used by todo.py)
     # ------------------------------------------------------------------
 
+    def _grocery_refs(self, grocery_ids: list[str]) -> list[dict[str, Any]] | None:
+        """Return [{id, version}] as current Norish expects, or None if unknown.
+
+        Norish uses the version for optimistic locking; it comes from the
+        last groceries.list.
+        """
+        by_id = {
+            g.get("id"): g for g in (self.data or {}).get("groceries", [])
+            if isinstance(g, dict)
+        }
+        refs = []
+        for grocery_id in grocery_ids:
+            version = (by_id.get(grocery_id) or {}).get("version")
+            if not isinstance(version, int) or version < 1:
+                return None
+            refs.append({"id": grocery_id, "version": version})
+        return refs
+
+    async def _post_grocery_mutation(
+        self, procedure: str, grocery_ids: list[str], extra: dict[str, Any]
+    ) -> list[Any] | None:
+        """POST a toggle/delete in the current format, falling back to the old one.
+
+        Current Norish expects {"groceries": [{"id", "version"}]}; versions
+        before that took {"groceryIds": [...]}.
+        """
+        refs = self._grocery_refs(grocery_ids)
+        if refs is not None:
+            result = await self._post_trpc(procedure, {"groceries": refs, **extra})
+            if result is not None:
+                return result
+        return await self._post_trpc(procedure, {"groceryIds": grocery_ids, **extra})
+
+    async def async_create_grocery(
+        self, name: str, amount: float | None, store_id: str | None
+    ) -> bool:
+        """Add a grocery item to Norish (optionally filed under a store)."""
+        payload = [{
+            "name": name,
+            "unit": None,
+            "amount": amount,
+            "isDone": False,
+            "storeId": store_id,
+        }]
+        result = await self._post_trpc("groceries.create", payload)
+        if result is None:
+            _LOGGER.error("Norish: failed to add grocery %r", name)
+            return False
+        _LOGGER.debug("Norish: added grocery %r (store %s)", name, store_id)
+        await self.async_request_refresh()
+        return True
+
     async def async_delete_groceries(self, grocery_ids: list[str]) -> bool:
         """Delete grocery items from Norish."""
-        payload: dict[str, Any] = {"groceryIds": grocery_ids}
-        result = await self._post_trpc("groceries.delete", payload)
+        result = await self._post_grocery_mutation("groceries.delete", grocery_ids, {})
         if result is None:
             _LOGGER.error("Norish: failed to delete groceries %s", grocery_ids)
             return False
@@ -764,8 +899,9 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, grocery_id: str, is_done: bool
     ) -> bool:
         """Toggle a grocery item's done state."""
-        payload: dict[str, Any] = {"groceryIds": [grocery_id], "isDone": is_done}
-        result = await self._post_trpc("groceries.toggle", payload)
+        result = await self._post_grocery_mutation(
+            "groceries.toggle", [grocery_id], {"isDone": is_done}
+        )
         if result is None:
             _LOGGER.error(
                 "Norish: failed to toggle grocery %s (isDone=%s)",
@@ -779,6 +915,25 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
     # Core data update
     # ------------------------------------------------------------------
+
+    def _keep_stale_data(self, err: Exception) -> bool:
+        """Return True to keep serving the last data after a failed update.
+
+        Only within STALE_DATA_GRACE of the last success; after that the
+        entities go unavailable as usual so a real outage is visible.
+        """
+        if (
+            self.data is None
+            or self.last_success is None
+            or dt_util.utcnow() - self.last_success > STALE_DATA_GRACE
+        ):
+            return False
+        self.stale = True
+        _LOGGER.warning(
+            "Norish: update failed (%s) – keeping data from %s",
+            err, dt_util.as_local(self.last_success).strftime("%H:%M"),
+        )
+        return True
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch all Norish data.
@@ -794,6 +949,7 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if dt_util.utcnow() < self._rate_limited_until:
                 if self.data is not None:
                     # Keep showing the last data instead of going unavailable
+                    self.stale = True
                     return self.data
                 raise UpdateFailed("Norish request limit reached – waiting")
             self._rate_limited_until = None
@@ -814,6 +970,10 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
         try:
+            # One HTTP request (one API-key hit) for both core lists
+            await self._prefetch_trpc(
+                [("calendar.listItems", self._calendar_payload()), ("groceries.list", None)]
+            )
             await self._fetch_calendar(data)
             await self._fetch_groceries(data)
             await self._fetch_stores_cached(data)
@@ -827,19 +987,24 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Temporary: keep the last data, poll again right after the pause
                 remaining = self._rate_limited_until - dt_util.utcnow()
                 self.update_interval = max(remaining, timedelta(seconds=60))
+                self.stale = True
                 return self.data
             self._consecutive_failures += 1
             self._apply_reconnect_backoff()
             raise
-        except UpdateFailed:
+        except UpdateFailed as err:
             # Rate-limit or explicit failure → HA will retry on next interval
             self._consecutive_failures += 1
             self._apply_reconnect_backoff()
+            if self._keep_stale_data(err):
+                return self.data
             raise
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Norish: failed to fetch core data: %s", err)
             self._consecutive_failures += 1
             self._apply_reconnect_backoff()
+            if self._keep_stale_data(err):
+                return self.data
             raise UpdateFailed(f"Error fetching Norish data: {err}") from err
 
         # --- Optional: recipe details + image caching ---
@@ -866,6 +1031,8 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._apply_reconnect_backoff()
 
         self._last_successful_update = date.today()
+        self.last_success = dt_util.utcnow()
+        self.stale = False
         _LOGGER.info(
             "Norish: loaded %d calendar events, %d grocery items",
             len(data.get("calendar", [])),
@@ -877,19 +1044,24 @@ class NorishCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Data fetch methods
     # ------------------------------------------------------------------
 
-    async def _fetch_calendar(self, data: dict[str, Any]) -> None:
-        """Fetch calendar entries."""
+    @staticmethod
+    def _calendar_payload() -> dict[str, str]:
+        """Date range for calendar.listItems (yesterday … two weeks ahead)."""
         # Use HA's local date, not the host's (containers often run in UTC)
         today = dt_util.now().date()
-        start_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
-        end_date = (today + timedelta(days=14)).strftime("%Y-%m-%d")
+        return {
+            "startISO": (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "endISO": (today + timedelta(days=14)).strftime("%Y-%m-%d"),
+        }
 
-        _LOGGER.debug("Norish: fetching calendar %s → %s", start_date, end_date)
-
-        c_data = await self._fetch_trpc(
-            "calendar.listItems",
-            {"startISO": start_date, "endISO": end_date},
+    async def _fetch_calendar(self, data: dict[str, Any]) -> None:
+        """Fetch calendar entries."""
+        payload = self._calendar_payload()
+        _LOGGER.debug(
+            "Norish: fetching calendar %s → %s", payload["startISO"], payload["endISO"]
         )
+
+        c_data = await self._fetch_trpc("calendar.listItems", payload)
         if c_data:
             items = self._safe_get_trpc_result(c_data, [])
             if isinstance(items, list):

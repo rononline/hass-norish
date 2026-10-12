@@ -15,7 +15,7 @@
  * norish_url: https://norish.example     # optional, adds an "open in Norish" link
  */
 
-const CARD_VERSION = "1.2.0";
+const CARD_VERSION = "1.3.0";
 
 const I18N = {
   en: {
@@ -27,6 +27,7 @@ const I18N = {
     prep: "Preparation", cook: "Cooking", total: "Total time", servings: "Servings",
     ingredients: "Ingredients", steps: "Method", hour: "h",
     no_details: "No recipe details available", no_recipe: "No recipe planned",
+    offline: "Offline", updated: "updated",
     BREAKFAST: "Breakfast", LUNCH: "Lunch", DINNER: "Dinner", SNACK: "Snack",
   },
   nl: {
@@ -38,6 +39,7 @@ const I18N = {
     prep: "Voorbereiding", cook: "Kooktijd", total: "Totale tijd", servings: "Porties",
     ingredients: "Ingrediënten", steps: "Bereiding", hour: "u",
     no_details: "Geen receptdetails beschikbaar", no_recipe: "Geen recept gepland",
+    offline: "Offline", updated: "bijgewerkt",
     BREAKFAST: "Ontbijt", LUNCH: "Lunch", DINNER: "Diner", SNACK: "Tussendoortje",
   },
   de: {
@@ -49,6 +51,7 @@ const I18N = {
     prep: "Vorbereitung", cook: "Kochzeit", total: "Gesamtzeit", servings: "Portionen",
     ingredients: "Zutaten", steps: "Zubereitung", hour: "Std.",
     no_details: "Keine Rezeptdetails verfügbar", no_recipe: "Kein Rezept geplant",
+    offline: "Offline", updated: "aktualisiert",
     BREAKFAST: "Frühstück", LUNCH: "Mittagessen", DINNER: "Abendessen", SNACK: "Snack",
   },
 };
@@ -166,10 +169,20 @@ class NorishCard extends HTMLElement {
     if (this._config?.entity) return this._config.entity;
     if (!this._hass) return undefined;
     if (!this._autoEntity || !this._hass.states[this._autoEntity]) {
-      this._autoEntity = Object.keys(this._hass.states).find(
+      const found = Object.keys(this._hass.states).find(
         (id) => id.startsWith("sensor.") &&
           Array.isArray(this._hass.states[id].attributes?.week_data)
       );
+      if (found) {
+        this._autoEntity = found;
+        try { localStorage.setItem("norish-card:entity", found); } catch (err) { /* ignore */ }
+      } else {
+        // Sensor unavailable (no attributes): use the one seen before
+        let remembered = null;
+        try { remembered = localStorage.getItem("norish-card:entity"); } catch (err) { /* ignore */ }
+        this._autoEntity = [remembered, "sensor.norish_week_planner"]
+          .find((id) => id && this._hass.states[id]);
+      }
     }
     return this._autoEntity;
   }
@@ -371,6 +384,48 @@ class NorishCard extends HTMLElement {
     return `<div class="week">${rows}</div>`;
   }
 
+  /**
+   * Week data to show: live from the sensor, or – when the sensor is
+   * unavailable – the last data this card saw (kept in memory and in
+   * localStorage, so a kitchen display survives a reload during an outage).
+   */
+  _weekData(entityId, state) {
+    const key = `norish-card:${entityId}`;
+    const live = state?.attributes?.week_data;
+    if (Array.isArray(live)) {
+      this._cache = {
+        week: live,
+        lastSuccess: state.attributes.last_success || new Date().toISOString(),
+      };
+      try {
+        localStorage.setItem(key, JSON.stringify(this._cache));
+      } catch (err) { /* storage unavailable – memory cache only */ }
+      return { week: live, offline: !!state.attributes.stale, lastSuccess: this._cache.lastSuccess };
+    }
+    if (!this._cache) {
+      try {
+        this._cache = JSON.parse(localStorage.getItem(key) || "null");
+      } catch (err) { this._cache = null; }
+    }
+    if (!this._cache || !Array.isArray(this._cache.week)) return undefined;
+    // Cached days may be from yesterday: drop past days, re-mark today
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const week = this._cache.week
+      .filter((d) => d.date >= today)
+      .map((d) => ({ ...d, is_today: d.date === today }));
+    return { week, offline: true, lastSuccess: this._cache.lastSuccess };
+  }
+
+  _offlineBadge(lastSuccess) {
+    const when = lastSuccess ? new Date(lastSuccess) : null;
+    const time = when && !Number.isNaN(when.getTime())
+      ? when.toLocaleTimeString(this._lang_full(), { hour: "2-digit", minute: "2-digit" })
+      : "";
+    return `<span class="offline"><ha-icon icon="mdi:cloud-off-outline"></ha-icon>${esc(this._t("offline"))}${
+      time ? ` · ${esc(this._t("updated"))} ${esc(time)}` : ""}</span>`;
+  }
+
   _render() {
     if (!this._config) return;
     if (!this.shadowRoot) {
@@ -384,14 +439,16 @@ class NorishCard extends HTMLElement {
     const title = this._config.title ?? (view === "recipe" ? "" : this._t("title"));
     const entityId = this._entityId();
     const state = entityId && this._hass?.states[entityId];
+    const data = this._hass && entityId ? this._weekData(entityId, state) : undefined;
+    const badge = data?.offline ? this._offlineBadge(data.lastSuccess) : "";
     let body;
 
     if (!this._hass) {
       body = "";
-    } else if (!state) {
+    } else if (!data) {
       body = `<div class="warning">${esc(this._t("no_entity"))}</div>`;
     } else {
-      const week = state.attributes.week_data || [];
+      const week = data.week;
       const days = Math.max(1, Math.min(7, Number(this._config.days) || 7));
       const hasAny = week.some((d) => (d.meals || []).length);
       const sel = this._selected;
@@ -430,8 +487,8 @@ class NorishCard extends HTMLElement {
       <ha-card>
         ${title ? `<div class="header">
           <div class="title"><ha-icon icon="mdi:chef-hat"></ha-icon>${esc(title)}</div>
-          <div class="subtitle">${esc(today)}</div></div>` : ""}
-        <div class="content">${body}</div>
+          <div class="subtitle">${badge || esc(today)}</div></div>` : ""}
+        <div class="content">${!title && badge ? `<div class="badge-row">${badge}</div>` : ""}${body}</div>
       </ha-card>`;
     // Image not reachable (e.g. not cached yet) → show the slot placeholder
     this.shadowRoot.querySelectorAll("img").forEach((img) => {
@@ -574,6 +631,14 @@ const STYLE = `
   .empty-week { flex-direction: column; padding: 28px 16px; text-align: center; }
   .empty-week ha-icon { --mdc-icon-size: 36px; opacity: 0.6; }
   .warning { color: var(--error-color); padding: 8px 0; }
+  .offline {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px 2px 6px;
+    border-radius: 999px; font-size: 0.85em; white-space: nowrap;
+    color: var(--warning-color, #e0a000);
+    background: color-mix(in srgb, var(--warning-color, #e0a000) 14%, transparent);
+  }
+  .offline ha-icon { --mdc-icon-size: 16px; }
+  .badge-row { display: flex; justify-content: flex-end; margin-bottom: -6px; }
 
   /* Recipe view */
   .recipe { display: flex; flex-direction: column; gap: 20px; }

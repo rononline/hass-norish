@@ -1,9 +1,13 @@
 name: Sync upstream
 
 # Merges new commits from the original repository (Caps3n/hass-norish) into
-# this fork's main branch, so HACS picks them up as an update.
-# If the merge conflicts with local changes the job fails and GitHub sends
-# a notification; resolve it manually in that case.
+# this fork's main branch, bumps the patch version and creates a release, so
+# HACS offers the upstream changes as an update.
+#
+# The upstream version number in manifest.json always differs from this
+# fork's, so a conflict in that file alone is resolved by keeping this fork's
+# manifest. Any other conflict fails the job and GitHub sends a notification;
+# resolve it manually in that case.
 
 on:
   schedule:
@@ -17,6 +21,8 @@ jobs:
   sync:
     if: github.repository != 'Caps3n/hass-norish'
     runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,7 +30,10 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Merge upstream
+      - name: Merge upstream and bump version
+        id: merge
+        env:
+          MANIFEST: custom_components/norish/manifest.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -32,7 +41,31 @@ jobs:
           git fetch upstream main
           if git merge-base --is-ancestor upstream/main HEAD; then
             echo "Already up to date with upstream."
+            echo "merged=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git merge --no-edit upstream/main
+
+          if ! git merge --no-edit upstream/main; then
+            conflicted=$(git diff --name-only --diff-filter=U)
+            if [ "$conflicted" != "$MANIFEST" ]; then
+              echo "::error::Merge conflict in: $conflicted"
+              exit 1
+            fi
+            echo "Only the manifest conflicts (version number) – keeping ours."
+            git checkout --ours "$MANIFEST"
+            git add "$MANIFEST"
+            git commit --no-edit
+          fi
+
+          # Bump the patch version so the release workflow publishes it
+          old=$(jq -r .version "$MANIFEST")
+          new=$(echo "$old" | awk -F. -v OFS=. '{ $NF = $NF + 1; print }')
+          sed -i -E "s/(\"version\": *\")[^\"]+\"/\1${new}\"/" "$MANIFEST"
+          git commit -am "chore: version ${new} after upstream sync"
           git push origin main
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: sync
+    if: needs.sync.outputs.merged == 'true'
+    uses: ./.github/workflows/release.yaml

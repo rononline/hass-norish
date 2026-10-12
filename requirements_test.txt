@@ -1,0 +1,4 @@
+homeassistant==2026.2.3
+# camera → stream imports numpy, which Home Assistant installs on demand
+numpy
+pytest

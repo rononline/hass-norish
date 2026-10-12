@@ -17,8 +17,10 @@ CONF_POLL_INTERVAL = "poll_interval"
 DEFAULT_POLL_INTERVAL = 900  # 15 minutes
 
 # Available poll interval choices (seconds → human-readable label)
+# Norish allows 500 requests per API key between idle hours; 1 minute
+# (1440 polls a day) would always hit that limit, so 5 minutes is the minimum.
+MIN_POLL_INTERVAL = 300
 POLL_INTERVAL_OPTIONS: dict[int, str] = {
-    60:   "1 minute",
     300:  "5 minutes",
     600:  "10 minutes",
     900:  "15 minutes",
